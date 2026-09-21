@@ -25,6 +25,8 @@ struct OtherOp: Identifiable {
     let title: String
     let message: String
     let destructive: Bool
+    /// Pane whose status area receives the result — set from the rows' pane.
+    var pane: OtherPane = .localNetwork
     let run: () throws -> String
 }
 

@@ -19,6 +19,9 @@ struct PermRow: Identifiable {
     /// every store's rows into the By App view. Empty = not attributable
     /// to a single app (e.g. Gatekeeper rules) → excluded from By App.
     var appKey: String = ""
+    /// Which Other-pane produced this row — lets op results land in the
+    /// right pane's status area even when run from the By App merge.
+    var pane: OtherPane? = nil
     /// Optional extra context-menu copy action, evaluated lazily on click.
     var extraCopy: (() -> (label: String, text: String)?)? = nil
 }

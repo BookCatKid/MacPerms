@@ -64,9 +64,13 @@ case "ne-remove":
     guard args.count == 2 else { fail("args") }
     let objects = try mutableObjects()
     let n = NEPlist.removeRule(in: objects, signingID: args[1])
-    guard n > 0 else { fail("no rule for \(args[1])") }
-    try commitNE(objects)
-    print("OK removed \(n) rule ref(s)")
+    if n == 0 {
+        // Idempotent: the desired end state (record absent) already holds.
+        print("OK already absent")
+    } else {
+        try commitNE(objects)
+        print("OK removed \(n) rule ref(s)")
+    }
 
 case "loc-dump":
     // locationd plists embed NSData (requirement blobs) and NSDate — neither is

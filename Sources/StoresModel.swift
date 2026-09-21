@@ -80,6 +80,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             ops: [.allow, .deny, .reset, .remove],
             payload: r)
         row.appKey = r.signingID
+        row.pane = .localNetwork
         return row
     }
 
@@ -90,7 +91,8 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
     }
 
     nonisolated private static func btmRow(for i: BTMItem,
-                                           launchd: [String: [String: Bool]]) -> PermRow {
+                                           launchd: [String: [String: Bool]],
+                                           pane: OtherPane) -> PermRow {
         var id = Resolver.identity(for: itemBundleID(i), clientType: 0)
         if id.appURL == nil, let exe = i.executable {
             id = Resolver.identity(for: exe, clientType: 1)
@@ -116,6 +118,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             ops: ops,
             payload: i)
         row.appKey = i.bundleID ?? ""
+        row.pane = pane
         return row
     }
 
@@ -138,11 +141,12 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             payload: x)
         row.appKey = x.hostAppPath
             .flatMap { Bundle(url: URL(fileURLWithPath: $0))?.bundleIdentifier } ?? ""
+        row.pane = .appExtensions
         return row
     }
 
     nonisolated private static func gkRow(for r: GKRule) -> PermRow {
-        PermRow(
+        var row = PermRow(
             id: "\(r.index)",
             icon: NSImage(systemSymbolName: "checkmark.shield",
                           accessibilityDescription: nil) ?? NSImage(),
@@ -154,6 +158,8 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             detail: r.requirement,
             ops: [.enable, .disable, .remove],
             payload: r)
+        row.pane = .gatekeeper
+        return row
     }
 
     nonisolated private static func locRow(for c: LocationClient) -> PermRow {
@@ -171,6 +177,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             ops: [.allow, .deny, .remove],
             payload: c)
         row.appKey = c.clientID
+        row.pane = .location
         return row
     }
 
@@ -193,6 +200,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             ops: [.allow, .deny, .reset],
             payload: n)
         row.appKey = displayID
+        row.pane = .notifications
         return row
     }
 
@@ -232,7 +240,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
         }
         let rs = items.filter {
             $0.type.contains("login") || ($0.type.contains("app") && $0.enabled)
-        }.map { Self.btmRow(for: $0, launchd: doms) }
+        }.map { Self.btmRow(for: $0, launchd: doms, pane: .loginItems) }
         await MainActor.run {
             rows[.loginItems] = rs
             if rs.isEmpty { status[.loginItems] = "No login items found." }
@@ -246,7 +254,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             let d = uid > 0 ? "gui/\(uid)" : "system"
             if doms[d] == nil { doms[d] = OtherStore.launchdDisabled(d) }
         }
-        let rs = items.map { Self.btmRow(for: $0, launchd: doms) }
+        let rs = items.map { Self.btmRow(for: $0, launchd: doms, pane: .backgroundItems) }
         await MainActor.run {
             rows[.backgroundItems] = rs
             if items.isEmpty { status[.backgroundItems] = "No items returned by `sfltool dumpbtm`." }
@@ -293,9 +301,22 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
 
     // MARK: - Ops (always via OtherOp confirmation)
 
+    /// Run a mutation per item: dedupes on the key (multiple rows can share
+    /// one underlying record, e.g. NE rules with the same signingID) and
+    /// captures per-item failures in the output instead of aborting the batch.
+    nonisolated private static func each<T>(_ items: [T], _ key: (T) -> String,
+                                            _ work: (T) throws -> String) -> String {
+        var seen = Set<String>()
+        return items.filter { seen.insert(key($0)).inserted }.map { item in
+            do { return "\(key(item)): \(try work(item))" }
+            catch { return "\(key(item)): ✗ \(error.localizedDescription)" }
+        }.joined(separator: "\n")
+    }
+
     /// Build the confirmation prompt for an op on selected rows — dispatches
     /// on payload type so it works from pane views AND the By App merge.
     func ask(_ o: RowOp, _ sel: [PermRow]) {
+        defer { op?.pane = sel.first?.pane ?? .localNetwork }
         let names = sel.prefix(4).map(\.title).joined(separator: ", ")
             + (sel.count > 4 ? " +\(sel.count - 4) more" : "")
 
@@ -307,21 +328,27 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                     title: "\(allow ? "Allow" : "Deny") Local Network for \(rs.count) app(s)?",
                     message: "\(names)\n\nSets DenyMulticast=\(!allow) on the per-user networkprivacy configuration.",
                     destructive: !allow) {
-                        try rs.map { try OtherStore.neSet(signingID: $0.signingID, allow: allow) }.joined(separator: "\n")
+                        Self.each(rs, \.signingID) {
+                            try OtherStore.neSet(signingID: $0.signingID, allow: allow)
+                        }
                     }
             case .reset:
                 op = OtherOp(
                     title: "Reset Local Network for \(rs.count) app(s)?",
                     message: "\(names)\n\nClears the explicit decision (DenyMulticast restored to default, preference flag cleared) so the app is prompted again.",
                     destructive: true) {
-                        try rs.map { try OtherStore.neReset(signingID: $0.signingID) }.joined(separator: "\n")
+                        Self.each(rs, \.signingID) {
+                            try OtherStore.neReset(signingID: $0.signingID)
+                        }
                     }
             case .remove:
                 op = OtherOp(
                     title: "Remove Local Network record for \(rs.count) app(s)?",
                     message: "\(names)\n\nDeletes the rule from the networkprivacy configuration entirely — the entry disappears and the app is prompted as if it had never asked.",
                     destructive: true) {
-                        try rs.map { try OtherStore.neRemove(signingID: $0.signingID) }.joined(separator: "\n")
+                        Self.each(rs, \.signingID) {
+                            try OtherStore.neRemove(signingID: $0.signingID)
+                        }
                     }
             default: break
             }
@@ -338,10 +365,10 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                     title: "\(enable ? "Enable" : "Disable") \(svc.count) item(s)?",
                     message: "\(names)\n\nRuns `launchctl \(enable ? "enable" : "disable") <domain>/<label>` for each item — the same per-service switch Settings toggles. State is re-read from print-disabled after writing.",
                     destructive: !enable) {
-                        try svc.map {
+                        Self.each(svc, \.launchdLabel) {
                             try OtherStore.launchctlSetEnabled(
                                 domain: $0.launchdDomain, label: $0.launchdLabel, enabled: enable)
-                        }.joined(separator: "\n")
+                        }
                     }
             case .remove:
                 let apps = items.filter { $0.type.contains("app") && $0.enabled }
@@ -350,10 +377,10 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                     title: "Remove \(apps.count) login item(s)?",
                     message: "\(names)\n\nDeletes the 'Open at Login' entry via System Events — the same as '-' in Settings → Login Items.",
                     destructive: true) {
-                        try apps.map {
+                        Self.each(apps, \.name) {
                             let out = try OtherStore.seRemoveLoginItem(name: $0.name)
-                            return "\($0.name): \(out.isEmpty ? "removed" : out)"
-                        }.joined(separator: "\n")
+                            return out.isEmpty ? "removed" : out
+                        }
                     }
             default: break
             }
@@ -368,30 +395,30 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                     title: "\(enable ? "Enable" : "Disable") \(xs.count) extension(s)?",
                     message: "\(names)\n\nRuns `pluginkit -e \(enable ? "use" : "ignore") -i <id>` in the console user's pkd domain. The list is re-read after writing.",
                     destructive: !enable) {
-                        try xs.map {
+                        Self.each(xs, \.extID) {
                             let out = try OtherStore.extSetEnabled(extID: $0.extID, enabled: enable)
-                            return "\($0.extID): \(out.isEmpty ? "OK" : out)"
-                        }.joined(separator: "\n")
+                            return out.isEmpty ? "OK" : out
+                        }
                     }
             case .reset:
                 op = OtherOp(
                     title: "Reset election for \(xs.count) extension(s)?",
                     message: "\(names)\n\nRuns `pluginkit -e default -i <id>` — forgets your use/ignore choice so the extension returns to pkd's default election.",
                     destructive: true) {
-                        try xs.map {
+                        Self.each(xs, \.extID) {
                             let out = try OtherStore.extResetElection(extID: $0.extID)
-                            return "\($0.extID): \(out.isEmpty ? "OK" : out)"
-                        }.joined(separator: "\n")
+                            return out.isEmpty ? "OK" : out
+                        }
                     }
             case .remove:
                 op = OtherOp(
                     title: "Unregister \(xs.count) extension(s)?",
                     message: "\(names)\n\nRuns `pluginkit -r <path>` — removes the extension from pkd's registry. It re-registers on next host-app launch or pkd rescan.",
                     destructive: true) {
-                        try xs.map {
+                        Self.each(xs, \.extID) {
                             let out = try OtherStore.extUnregister(path: $0.path)
-                            return "\($0.extID): \(out.isEmpty ? "removed" : out)"
-                        }.joined(separator: "\n")
+                            return out.isEmpty ? "removed" : out
+                        }
                     }
             default: break
             }
@@ -413,7 +440,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                 title: "\(verb) Gatekeeper label(s): \(labels.joined(separator: ", "))?",
                 message: "Runs `spctl \(flag.joined(separator: " ")) --label` for each label as root (affects \(rs.count) listed rule(s)).",
                 destructive: o != .enable) {
-                    try labels.map { try OtherStore.gk(flag + ["--label", $0]) }.joined(separator: "\n")
+                    Self.each(labels, { $0 }) { try OtherStore.gk(flag + ["--label", $0]) }
                 }
             return
         }
@@ -426,14 +453,14 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                     title: "\(allow ? "Allow" : "Deny") Location Services for \(cl.count) client(s)?",
                     message: "\(names)\n\nWrites Authorized=\(allow) to the locationd clients store as root. UNVERIFIED write path — locationd may ignore it until restarted. Relaunch the app to test.",
                     destructive: !allow) {
-                        try cl.map { try OtherStore.locSet(key: $0.key, allow: allow) }.joined(separator: "\n")
+                        Self.each(cl, \.key) { try OtherStore.locSet(key: $0.key, allow: allow) }
                     }
             case .remove:
                 op = OtherOp(
                     title: "Remove \(cl.count) Location Services record(s)?",
                     message: "\(names)\n\nDeletes the client entry from the locationd stores entirely — the app re-prompts next time it requests location.",
                     destructive: true) {
-                        try cl.map { try OtherStore.locRemove(key: $0.key) }.joined(separator: "\n")
+                        Self.each(cl, \.key) { try OtherStore.locRemove(key: $0.key) }
                     }
             default: break
             }
@@ -448,14 +475,18 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                     title: "\(allow ? "Allow" : "Disable") notifications for \(apps.count) app(s)?",
                     message: "\(names)\n\n\(allow ? "Sets" : "Clears") the allow-notifications flag (bit 25) in the usernoted store and restarts usernoted + cfprefsd to re-read it.",
                     destructive: !allow) {
-                        try apps.map { try OtherStore.ncSet(bundleID: $0.bundleID, allow: allow) }.joined(separator: "\n")
+                        Self.each(apps, \.bundleID) {
+                            try OtherStore.ncSet(bundleID: $0.bundleID, allow: allow)
+                        }
                     }
             case .reset:
                 op = OtherOp(
                     title: "Reset notification settings for \(apps.count) app(s)?",
                     message: "\(names)\n\nRemoves the app's entry from the usernoted store entirely — it re-registers and re-prompts on next launch.",
                     destructive: true) {
-                        try apps.map { try OtherStore.ncReset(bundleID: $0.bundleID) }.joined(separator: "\n")
+                        Self.each(apps, \.bundleID) {
+                            try OtherStore.ncReset(bundleID: $0.bundleID)
+                        }
                     }
             default: break
             }
@@ -471,12 +502,12 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             do {
                 let out = try o.run()
                 await MainActor.run {
-                    self.status[.localNetwork] = "✓ \(out)"
+                    self.status[o.pane] = "✓ \(out)"
                     for pane in OtherPane.allCases { self.load(pane) }
                 }
             } catch {
                 await MainActor.run {
-                    self.status[.localNetwork] = "✗ \(error.localizedDescription)"
+                    self.status[o.pane] = "✗ \(error.localizedDescription)"
                 }
             }
         }
