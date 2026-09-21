@@ -111,10 +111,17 @@ final class TCCViewModel: ObservableObject {
     // MARK: - Mutations (always via confirmation sheet)
 
     func request(_ op: PendingChange.Op, for record: TCCRecord) {
-        pending = [PendingChange(op: op, service: record.service, client: record.client,
-                                 clientType: record.clientType,
-                                 indirectObject: record.indirectObject,
-                                 db: record.db, csreq: record.csreq)]
+        request(op, for: [record])
+    }
+
+    func request(_ op: PendingChange.Op, for recs: [TCCRecord]) {
+        let eligible = recs.filter { !$0.managed }
+        guard !eligible.isEmpty else { return }
+        pending = eligible.map {
+            PendingChange(op: op, service: $0.service, client: $0.client,
+                          clientType: $0.clientType, indirectObject: $0.indirectObject,
+                          db: $0.db, csreq: $0.csreq)
+        }
     }
 
     func requestAllServices(_ op: PendingChange.Op, client: String, clientType: Int) {

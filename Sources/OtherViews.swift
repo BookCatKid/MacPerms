@@ -1,8 +1,8 @@
 import SwiftUI
 import AppKit
 
-/// Dispatcher for the non-TCC permission stores. Each store keeps its own
-/// reader/writer — nothing is forced through the TCC model.
+/// Dispatcher for the non-TCC permission stores. Every pane loads its own data
+/// and maps it to PermRows — the list view itself is identical everywhere.
 struct OtherView: View {
     let pane: OtherPane
 
@@ -24,6 +24,24 @@ struct OtherOp: Identifiable {
     let message: String
     let destructive: Bool
     let run: () throws -> String
+}
+
+/// Generic confirmation alert wiring for OtherOp.
+private struct OtherOpAlert: ViewModifier {
+    @Binding var op: OtherOp?
+    let perform: () -> Void
+    func body(content: Content) -> some View {
+        content.alert(op?.title ?? "", isPresented: Binding(
+            get: { op != nil }, set: { if !$0 { op = nil } })) {
+            Button("Apply", role: op?.destructive == true ? .destructive : nil) { perform() }
+            Button("Cancel", role: .cancel) { op = nil }
+        } message: { Text(op?.message ?? "") }
+    }
+}
+extension View {
+    func otherOpAlert(_ op: Binding<OtherOp?>, perform: @escaping () -> Void) -> some View {
+        modifier(OtherOpAlert(op: op, perform: perform))
+    }
 }
 
 struct OtherStatus: View {
@@ -50,76 +68,37 @@ struct LocalNetworkView: View {
     @EnvironmentObject var model: TCCViewModel
     @State private var configs: [NEPlist.Config] = []
     @State private var configID: String?
-    @State private var selection = Set<String>()
     @State private var status = ""
     @State private var op: OtherOp?
-    @State private var filter = ""
 
     private var config: NEPlist.Config? {
         configs.first { $0.uuid == configID } ?? configs.first
     }
-    private var rules: [NEPlist.Rule] {
-        guard let c = config else { return [] }
-        let r = c.rules.filter { !$0.isDefault }
-        if filter.isEmpty { return r }
-        return r.filter { $0.signingID.localizedCaseInsensitiveContains(filter)
-            || ($0.path ?? "").localizedCaseInsensitiveContains(filter) }
-    }
     private var defaultRule: NEPlist.Rule? { config?.rules.first { $0.isDefault } }
+
+    private var rows: [PermRow] {
+        (config?.rules ?? []).filter { !$0.isDefault }.map { r in
+            let id = Resolver.identity(for: r.signingID, clientType: 0)
+            return PermRow(
+                id: r.signingID, icon: id.icon, title: id.name, subtitle: r.signingID,
+                service: "Local Network",
+                status: r.status,
+                statusColor: r.denyMulticast ? .red : .green,
+                info: r.multicastPreferenceSet ? "Explicit" : "Implicit",
+                detail: r.path ?? "",
+                ops: [.allow, .deny, .reset],
+                payload: r)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            Table(rules, selection: $selection) {
-                TableColumn("Application") { r in
-                    let id = Resolver.identity(for: r.signingID, clientType: 0)
-                    HStack(spacing: 6) {
-                        Image(nsImage: id.icon)
-                        VStack(alignment: .leading) {
-                            Text(id.name).lineLimit(1)
-                            Text(r.signingID).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                    }
-                }
-                .width(min: 180, ideal: 240)
-
-                TableColumn("Status") { r in
-                    Text(r.status)
-                        .font(.callout.bold())
-                        .padding(.horizontal, 8).padding(.vertical, 2)
-                        .background(Color(r.denyMulticast ? .red : .green).opacity(0.2), in: Capsule())
-                        .foregroundStyle(r.denyMulticast ? .red : .green)
-                }
-                .width(70)
-
-                TableColumn("Choice") { r in
-                    Text(r.multicastPreferenceSet ? "Explicit" : "Implicit")
-                        .font(.callout)
-                        .foregroundStyle(r.multicastPreferenceSet ? .primary : .secondary)
-                }
-                .width(70)
-
-                TableColumn("Path") { r in
-                    Text(r.path ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-            }
-            .contextMenu(forSelectionType: String.self) { ids in
-                let rs = rules.filter { ids.contains($0.signingID) }
-                if !rs.isEmpty {
-                    Button("Allow") { ask(.allow, rs) }
-                    Button("Deny") { ask(.deny, rs) }
-                    Button("Reset (reprompt)") { ask(.reset, rs) }
-                }
-            }
-
-            Divider()
-            HStack {
-                if let d = defaultRule {
-                    Label("Default: \(d.denyMulticast ? "deny" : "allow")"
-                          + (d.multicastPreferenceSet ? " (explicit)" : ""),
-                          systemImage: "asterisk.circle")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                if configs.count > 1 {
+            UnifiedListView(
+                rows: rows,
+                footerText: defaultRule.map {
+                    "Default: \($0.denyMulticast ? "deny" : "allow")\($0.multicastPreferenceSet ? " (explicit)" : "")"
+                },
+                footerExtra: configs.count > 1 ? AnyView(
                     Picker("User", selection: Binding(
                         get: { configID ?? configs.first?.uuid ?? "" },
                         set: { configID = $0 })) {
@@ -127,28 +106,21 @@ struct LocalNetworkView: View {
                             Text(c.userUUID ?? c.uuid).tag(c.uuid)
                         }
                     }
-                    .labelsHidden()
-                    .fixedSize()
-                }
-                Spacer()
-                let sel = rules.filter { selection.contains($0.signingID) }
-                Button("Allow") { ask(.allow, sel) }.disabled(sel.isEmpty)
-                Button("Deny") { ask(.deny, sel) }.disabled(sel.isEmpty)
-                Button("Reset", role: .destructive) { ask(.reset, sel) }.disabled(sel.isEmpty)
-                TextField("Filter", text: $filter)
-                    .textFieldStyle(.roundedBorder).frame(width: 140)
-            }
-            .padding(8)
+                    .labelsHidden().fixedSize()
+                ) : nil,
+                supportedOps: [.allow, .deny, .reset],
+                onOp: { o, sel in
+                    let rs = sel.compactMap { $0.payload as? NEPlist.Rule }
+                    switch o {
+                    case .allow: ask(.allow, rs)
+                    case .deny:  ask(.deny, rs)
+                    case .reset: ask(.reset, rs)
+                    default: break
+                    }
+                })
             OtherStatus(text: status)
         }
-        .alert(op?.title ?? "", isPresented: Binding(
-            get: { op != nil }, set: { if !$0 { op = nil } })) {
-            Button(op?.destructive == true ? "Reset" : "Apply",
-                   role: op?.destructive == true ? .destructive : nil) { perform() }
-            Button("Cancel", role: .cancel) { op = nil }
-        } message: {
-            Text(op?.message ?? "")
-        }
+        .otherOpAlert($op, perform: perform)
         .onAppear(perform: load)
         .onChange(of: model.otherReload) { _, _ in load() }
     }
@@ -219,7 +191,6 @@ struct BTMView: View {
     @EnvironmentObject var model: TCCViewModel
     @State private var items: [BTMItem] = []
     @State private var status = ""
-    @State private var filter = ""
     @State private var showResetConfirm = false
 
     /// Best bundle-id for icon/name resolution: prefer the item's bundleID,
@@ -232,63 +203,35 @@ struct BTMView: View {
         return i.identifier
     }
 
-    private var shown: [BTMItem] {
-        if filter.isEmpty { return items }
-        return items.filter {
-            $0.name.localizedCaseInsensitiveContains(filter)
-            || ($0.developer ?? "").localizedCaseInsensitiveContains(filter)
-            || $0.identifier.localizedCaseInsensitiveContains(filter)
-            || ($0.bundleID ?? "").localizedCaseInsensitiveContains(filter)
+    private var rows: [PermRow] {
+        items.map { i in
+            let id = Resolver.identity(for: Self.itemBundleID(i), clientType: 0)
+            let type = i.type.replacingOccurrences(
+                of: #"\s*\(0x[0-9a-fA-F]+\)"#, with: "", options: .regularExpression)
+            return PermRow(
+                id: i.id, icon: id.icon, title: i.name, subtitle: i.identifier,
+                service: type,
+                status: i.status,
+                statusColor: i.allowed ? .green : .red,
+                info: i.enabled ? "Enabled" : "Disabled",
+                detail: i.lastUse ?? i.url ?? "",
+                ops: [],
+                payload: i)
         }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            Table(shown) {
-                TableColumn("Name") { i in
-                    let id = Resolver.identity(for: Self.itemBundleID(i), clientType: 0)
-                    HStack(spacing: 6) {
-                        Image(nsImage: id.icon)
-                        VStack(alignment: .leading) {
-                            Text(i.name).lineLimit(1)
-                            Text(i.identifier).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        }
+            UnifiedListView(
+                rows: rows,
+                footerText: "read-only — per-item toggling is not exposed",
+                pageActions: [
+                    .init(label: "Reset ALL background items…", destructive: true) {
+                        showResetConfirm = true
                     }
-                }
-                .width(min: 180, ideal: 260)
-                TableColumn("Developer") { i in Text(i.developer ?? "—").lineLimit(1) }
-                    .width(min: 100, ideal: 150)
-                TableColumn("Type") { i in Text(i.type).font(.callout).lineLimit(1) }
-                    .width(min: 110, ideal: 150)
-                TableColumn("Enabled") { i in
-                    Image(systemName: i.enabled ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(i.enabled ? .green : .secondary)
-                }
-                .width(60)
-                TableColumn("Allowed") { i in
-                    Text(i.status)
-                        .font(.callout.bold())
-                        .padding(.horizontal, 8).padding(.vertical, 2)
-                        .background(Color(i.allowed ? .green : .red).opacity(0.2), in: Capsule())
-                        .foregroundStyle(i.allowed ? .green : .red)
-                }
-                .width(80)
-                TableColumn("UID") { i in Text("\(i.uid)").font(.callout).foregroundStyle(.secondary) }
-                    .width(50)
-                TableColumn("Last use") { i in
-                    Text(i.lastUse ?? "—").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-            }
-
-            Divider()
-            HStack {
-                Text("\(items.count) items").foregroundStyle(.secondary).font(.callout)
-                Spacer()
-                Button("Reset ALL background items…", role: .destructive) { showResetConfirm = true }
-                TextField("Filter", text: $filter)
-                    .textFieldStyle(.roundedBorder).frame(width: 140)
-            }
-            .padding(8)
+                ],
+                supportedOps: [],
+                onOp: { _, _ in })
             OtherStatus(text: status)
         }
         .alert("Reset all background items?", isPresented: $showResetConfirm) {
@@ -328,64 +271,44 @@ struct GatekeeperView: View {
     @State private var rules: [GKRule] = []
     @State private var status = ""
     @State private var gkStatus = ""
-    @State private var selection = Set<Int>()
     @State private var op: OtherOp?
+
+    private var rows: [PermRow] {
+        rules.map { r in
+            PermRow(
+                id: "\(r.index)",
+                icon: NSImage(systemSymbolName: "checkmark.shield",
+                              accessibilityDescription: nil) ?? NSImage(),
+                title: r.authority, subtitle: "rule \(r.index) · \(r.priority)",
+                service: r.type,
+                status: r.op.capitalized,
+                statusColor: r.op == "allow" ? .green : .red,
+                info: r.authority,
+                detail: r.requirement,
+                ops: [.enable, .disable, .remove],
+                payload: r)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            Table(rules, selection: $selection) {
-                TableColumn("#") { r in Text("\(r.index)").foregroundStyle(.secondary) }
-                    .width(35)
-                TableColumn("Label") { r in Text(r.authority).lineLimit(1) }
-                    .width(min: 90, ideal: 130)
-                TableColumn("Pri") { r in Text(r.priority).foregroundStyle(.secondary) }
-                    .width(45)
-                TableColumn("Op") { r in
-                    Text(r.op)
-                        .font(.callout.bold())
-                        .padding(.horizontal, 8).padding(.vertical, 2)
-                        .background(Color(r.op == "allow" ? .green : .red).opacity(0.2), in: Capsule())
-                        .foregroundStyle(r.op == "allow" ? .green : .red)
-                }
-                .width(65)
-                TableColumn("Type") { r in Text(r.type).font(.callout) }
-                    .width(75)
-                TableColumn("Requirement") { r in
-                    Text(r.requirement).font(.caption.monospaced())
-                        .foregroundStyle(.secondary).lineLimit(2)
-                }
-            }
-            .contextMenu(forSelectionType: Int.self) { ids in
-                let rs = rules.filter { ids.contains($0.index) }
-                if let labels = Set(rs.map(\.authority)) as Set<String>? {
-                    Button("Enable label(s)") { ask("Enable", ["--enable"], Array(labels), rs) }
-                    Button("Disable label(s)") { ask("Disable", ["--disable"], Array(labels), rs) }
-                    Button("Remove rule(s)…") { ask("Remove", ["--remove"], Array(labels), rs) }
-                }
-            }
-
-            Divider()
-            HStack {
-                Text("\(rules.count) rules")
-                    .foregroundStyle(.secondary).font(.callout)
-                if !gkStatus.isEmpty {
-                    Text("· \(gkStatus)").foregroundStyle(.secondary).font(.callout)
-                }
-                Spacer()
-                let rs = rules.filter { selection.contains($0.index) }
-                let labels = Array(Set(rs.map(\.authority))).sorted()
-                Button("Enable") { ask("Enable", ["--enable"], labels, rs) }.disabled(rs.isEmpty)
-                Button("Disable") { ask("Disable", ["--disable"], labels, rs) }.disabled(rs.isEmpty)
-                Button("Remove", role: .destructive) { ask("Remove", ["--remove"], labels, rs) }.disabled(rs.isEmpty)
-            }
-            .padding(8)
+            UnifiedListView(
+                rows: rows,
+                footerText: gkStatus.isEmpty ? nil : gkStatus,
+                supportedOps: [.enable, .disable, .remove],
+                onOp: { o, sel in
+                    let rs = sel.compactMap { $0.payload as? GKRule }
+                    let labels = Array(Set(rs.map(\.authority))).sorted()
+                    switch o {
+                    case .enable:  ask("Enable", ["--enable"], labels, rs)
+                    case .disable: ask("Disable", ["--disable"], labels, rs)
+                    case .remove:  ask("Remove", ["--remove"], labels, rs)
+                    default: break
+                    }
+                })
             OtherStatus(text: status)
         }
-        .alert(op?.title ?? "", isPresented: Binding(
-            get: { op != nil }, set: { if !$0 { op = nil } })) {
-            Button("Apply", role: op?.destructive == true ? .destructive : nil) { perform() }
-            Button("Cancel", role: .cancel) { op = nil }
-        } message: { Text(op?.message ?? "") }
+        .otherOpAlert($op, perform: perform)
         .onAppear(perform: load)
         .onChange(of: model.otherReload) { _, _ in load() }
     }
@@ -439,6 +362,21 @@ struct LocationView: View {
     @State private var loaded = false
     @State private var op: OtherOp?
 
+    private var rows: [PermRow] {
+        clients.map { c in
+            let id = Resolver.identity(for: c.bundleID, clientType: 0)
+            return PermRow(
+                id: c.bundleID, icon: id.icon, title: id.name, subtitle: c.bundleID,
+                service: "Location",
+                status: c.authorized ? "Allowed" : "Denied",
+                statusColor: c.authorized ? .green : .red,
+                info: "",
+                detail: c.executable ?? "",
+                ops: [.allow, .deny],
+                payload: c)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if !loaded {
@@ -446,54 +384,21 @@ struct LocationView: View {
                 Button("Load clients (requires admin)…") { load() }
                 Spacer()
             } else {
-                Table(clients) {
-                    TableColumn("Client") { c in
-                        let id = Resolver.identity(for: c.bundleID, clientType: 0)
-                        HStack(spacing: 6) {
-                            Image(nsImage: id.icon)
-                            VStack(alignment: .leading) {
-                                Text(id.name).lineLimit(1)
-                                Text(c.bundleID).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                            }
+                UnifiedListView(
+                    rows: rows,
+                    pageActions: [
+                        .init(label: "Reload (admin)", destructive: false) { load() }
+                    ],
+                    supportedOps: [.allow, .deny],
+                    onOp: { o, sel in
+                        for c in sel.compactMap({ $0.payload as? LocationClient }) {
+                            ask(c, allow: o == .allow)
                         }
-                    }
-                    .width(min: 180, ideal: 260)
-                    TableColumn("Status") { c in
-                        Text(c.authorized ? "Allowed" : "Denied")
-                            .font(.callout.bold())
-                            .padding(.horizontal, 8).padding(.vertical, 2)
-                            .background(Color(c.authorized ? .green : .red).opacity(0.2), in: Capsule())
-                            .foregroundStyle(c.authorized ? .green : .red)
-                    }
-                    .width(70)
-                    TableColumn("Executable") { c in
-                        Text(c.executable ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    TableColumn("") { c in
-                        Button(c.authorized ? "Deny" : "Allow") {
-                            ask(c, allow: !c.authorized)
-                        }
-                        .buttonStyle(.borderless)
-                    }
-                    .width(50)
-                }
-
-                Divider()
-                HStack {
-                    Text("\(clients.count) clients")
-                        .foregroundStyle(.secondary).font(.callout)
-                    Spacer()
-                    Button("Reload (admin)") { load() }
-                }
-                .padding(8)
+                    })
             }
             OtherStatus(text: status)
         }
-        .alert(op?.title ?? "", isPresented: Binding(
-            get: { op != nil }, set: { if !$0 { op = nil } })) {
-            Button("Apply") { perform() }
-            Button("Cancel", role: .cancel) { op = nil }
-        } message: { Text(op?.message ?? "") }
+        .otherOpAlert($op, perform: perform)
     }
 
     private func ask(_ c: LocationClient, allow: Bool) {
@@ -542,26 +447,10 @@ struct LocationView: View {
 
 struct NotificationsView: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Notifications", systemImage: "bell").font(.title3.bold())
-            Text("Per-app notification authorization is managed by usernoted/Notification Center — but the authoritative store has not been located on macOS 27 yet.")
-                .foregroundStyle(.secondary)
-            GroupBox("What was checked") {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("• `com.apple.ncprefs` / `usernotificationskit` plists — preference data only")
-                    Text("• `db2` sqlite under `com.apple.notificationcenter` containers — not present on 27")
-                    Text("• Biome notification streams — event history, not authorization")
-                    Text("• `usernoted`/`notificationcenterui` — enforcement daemons identified")
-                }
-                .font(.callout)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            Label("Read-only placeholder — no mutation is offered until the store is mapped and a safe write path is verified.",
-                  systemImage: "lock")
-                .font(.callout).foregroundStyle(.orange)
-            Spacer()
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        UnifiedListView(
+            rows: [],
+            footerText: "authoritative store not mapped on macOS 27 — press ? for what was checked",
+            supportedOps: [],
+            onOp: { _, _ in })
     }
 }

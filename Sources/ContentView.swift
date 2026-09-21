@@ -3,23 +3,48 @@ import AppKit
 
 struct ContentView: View {
     @EnvironmentObject var model: TCCViewModel
-    @State private var selection = Set<TCCRecord.ID>()
     @State private var showRestartConfirm = false
     @State private var showHelp = false
-    @State private var sortOrder = [KeyPathComparator(\TCCRecord.client)]
 
     private var visibleRecords: [TCCRecord] {
-        let recs: [TCCRecord]
         switch model.mode {
         case .byService:
-            recs = model.selectedService.map { model.recordsForService($0) } ?? []
+            return model.selectedService.map { model.recordsForService($0) } ?? []
         case .byApp:
             if let sel = model.selectedClient {
                 let parts = sel.split(separator: "|", maxSplits: 1)
-                recs = model.recordsForClient(String(parts.last ?? ""), clientType: Int(parts.first ?? "0") ?? 0)
-            } else { recs = [] }
+                return model.recordsForClient(String(parts.last ?? ""), clientType: Int(parts.first ?? "0") ?? 0)
+            }
+            return []
         }
-        return recs.sorted(using: sortOrder)
+    }
+
+    /// TCC records mapped into the unified row model.
+    private var tccRows: [PermRow] {
+        visibleRecords.map { rec in
+            let id = Resolver.identity(for: rec.client, clientType: rec.clientType)
+            var service = ServiceCatalog.info(for: rec.service).displayName
+            if rec.indirectObject != "UNUSED" {
+                service += " → " + Resolver.identity(for: rec.indirectObject, clientType: 0).name
+            }
+            return PermRow(
+                id: rec.id,
+                icon: id.icon,
+                title: id.name,
+                subtitle: rec.client,
+                service: service,
+                status: rec.statusName,
+                statusColor: rec.statusColor,
+                info: rec.managed ? "Managed (MDM)" : rec.reasonName,
+                detail: "\(rec.db.kind.rawValue) DB · \(rec.lastModified.formatted(date: .abbreviated, time: .omitted))",
+                ops: rec.managed ? [] : [.allow, .deny, .reset],
+                payload: rec,
+                extraCopy: {
+                    guard let blob = rec.csreq, let text = Resolver.csreqText(blob)
+                    else { return nil }
+                    return ("Copy Code Requirement", text)
+                })
+        }
     }
 
     var body: some View {
@@ -54,9 +79,18 @@ struct ContentView: View {
                 OtherView(pane: pane)
             } else {
             VStack(spacing: 0) {
-                recordTable
-                Divider()
-                actionBar
+                UnifiedListView(
+                    rows: tccRows,
+                    supportedOps: [.allow, .deny, .reset],
+                    onOp: { op, sel in
+                        let recs = sel.compactMap { $0.payload as? TCCRecord }
+                        switch op {
+                        case .allow: model.request(.grant, for: recs)
+                        case .deny:  model.request(.revoke, for: recs)
+                        case .reset: model.request(.reset, for: recs)
+                        default: break
+                        }
+                    })
                 if !model.status.isEmpty {
                     Divider()
                     ScrollView {
@@ -193,106 +227,6 @@ struct ContentView: View {
         }
     }
 
-    // MARK: Record table
-
-    private var recordTable: some View {
-        Table(visibleRecords, selection: $selection, sortOrder: $sortOrder) {
-            TableColumn("Application", value: \.client) { rec in
-                let id = Resolver.identity(for: rec.client, clientType: rec.clientType)
-                HStack(spacing: 6) {
-                    Image(nsImage: id.icon)
-                    VStack(alignment: .leading) {
-                        Text(id.name).lineLimit(1)
-                        Text(rec.client).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                }
-            }
-            .width(min: 160, ideal: 220)
-
-            TableColumn("Service") { rec in
-                Text(ServiceCatalog.info(for: rec.service).displayName)
-            }
-            .width(min: 110, ideal: 150)
-
-            TableColumn("Status", value: \.authValue) { rec in
-                Text(rec.statusName)
-                    .font(.callout.bold())
-                    .padding(.horizontal, 8).padding(.vertical, 2)
-                    .background(Color(rec.statusColor).opacity(0.2), in: Capsule())
-                    .foregroundStyle(Color(rec.statusColor))
-            }
-            .width(80)
-
-            TableColumn("Set By", value: \.authReason) { rec in
-                Text(rec.managed ? "Managed (MDM)" : rec.reasonName).font(.callout)
-            }
-            .width(110)
-
-            TableColumn("Target") { rec in
-                if rec.indirectObject != "UNUSED" {
-                    let tid = Resolver.identity(for: rec.indirectObject, clientType: 0)
-                    HStack(spacing: 4) {
-                        Image(nsImage: tid.icon)
-                        Text(tid.name).lineLimit(1)
-                    }
-                }
-            }
-            .width(min: 90, ideal: 130)
-
-            TableColumn("DB") { rec in
-                Text(rec.db.kind.rawValue).font(.callout).foregroundStyle(.secondary)
-            }
-            .width(60)
-
-            TableColumn("Modified", value: \.lastModified) { rec in
-                Text(rec.lastModified, style: .date).font(.callout).foregroundStyle(.secondary)
-            }
-            .width(90)
-        }
-        .contextMenu(forSelectionType: TCCRecord.ID.self) { ids in
-            contextButtons(for: ids)
-        }
-    }
-
-    @ViewBuilder
-    private func contextButtons(for ids: Set<TCCRecord.ID>) -> some View {
-        let recs = visibleRecords.filter { ids.contains($0.id) && !$0.managed }
-        if !recs.isEmpty {
-            Button("Allow") { recs.forEach { model.request(.grant, for: $0) } }
-            Button("Deny") { recs.forEach { model.request(.revoke, for: $0) } }
-            Divider()
-            Button("Reset (delete record)") { recs.forEach { model.request(.reset, for: $0) } }
-        }
-        if let first = visibleRecords.first(where: { ids.contains($0.id) }) {
-            Divider()
-            Button("Copy Client ID") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(first.client, forType: .string)
-            }
-            if let csreq = first.csreq, let text = Resolver.csreqText(csreq) {
-                Button("Copy Code Requirement") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(text, forType: .string)
-                }
-            }
-        }
-    }
-
-    private var actionBar: some View {
-        let recs = visibleRecords.filter { selection.contains($0.id) && !$0.managed }
-        return HStack {
-            Text("\(visibleRecords.count) records")
-                .foregroundStyle(.secondary).font(.callout)
-            if selection.isEmpty == false {
-                Text("· \(selection.count) selected").foregroundStyle(.secondary).font(.callout)
-            }
-            Spacer()
-            Button("Allow") { recs.forEach { model.request(.grant, for: $0) } }.disabled(recs.isEmpty)
-            Button("Deny") { recs.forEach { model.request(.revoke, for: $0) } }.disabled(recs.isEmpty)
-            Button("Reset", role: .destructive) { recs.forEach { model.request(.reset, for: $0) } }.disabled(recs.isEmpty)
-        }
-        .padding(8)
-    }
 }
 
 // MARK: - Confirmation sheet
