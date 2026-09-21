@@ -42,7 +42,7 @@ enum Resolver {
                                         isPathClient: true)
             } else {
                 let icon = FileManager.default.fileExists(atPath: client)
-                    ? NSWorkspace.shared.icon(forFile: client)
+                    ? smallIcon(NSWorkspace.shared.icon(forFile: client))
                     : NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)!
                 result = ClientIdentity(name: url.lastPathComponent, icon: icon,
                                         appURL: FileManager.default.fileExists(atPath: client) ? url : nil,
@@ -55,12 +55,28 @@ enum Resolver {
         return result
     }
 
+    /// Rasterize a file icon to a small bitmap once — NSWorkspace icons carry
+    /// up-to-1024px representations whose compositing cost shows up as scroll
+    /// lag when every visible table row draws one. SF-symbol fallback icons
+    /// are left alone (cheap vectors + they need template rendering).
+    static func smallIcon(_ img: NSImage) -> NSImage {
+        let s: CGFloat = 48
+        let out = NSImage(size: NSSize(width: s, height: s))
+        out.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        img.draw(in: NSRect(x: 0, y: 0, width: s, height: s),
+                 from: .zero, operation: .sourceOver, fraction: 1)
+        out.unlockFocus()
+        return out
+    }
+
     private static func appIdentity(url: URL, fallback: String) -> ClientIdentity {
         let bundle = Bundle(url: url)
         let name = bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
             ?? bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
             ?? url.deletingPathExtension().lastPathComponent
-        return ClientIdentity(name: name, icon: NSWorkspace.shared.icon(forFile: url.path),
+        return ClientIdentity(name: name,
+                              icon: smallIcon(NSWorkspace.shared.icon(forFile: url.path)),
                               appURL: url, isPathClient: false)
     }
 

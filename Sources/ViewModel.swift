@@ -14,7 +14,19 @@ enum NavItem: Hashable {
 @MainActor
 final class TCCViewModel: ObservableObject {
     @Published var databases: [TCCDatabaseFile] = []
-    @Published var records: [TCCRecord] = []
+    @Published var records: [TCCRecord] = [] {
+        didSet {
+            // Count indexes for the sidebars — recomputed once per reload so
+            // rows don't each filter the full record array per render.
+            serviceCounts = Dictionary(records.map { ($0.service, 1) },
+                                       uniquingKeysWith: +)
+            clientCounts = Dictionary(
+                records.map { ("\($0.clientType)|\($0.client)", 1) },
+                uniquingKeysWith: +)
+        }
+    }
+    private(set) var serviceCounts: [String: Int] = [:]
+    private(set) var clientCounts: [String: Int] = [:]
     @Published var loadErrors: [String] = []
     @Published var mode: ViewMode = .byService
     @Published var selection: NavItem?
@@ -101,12 +113,18 @@ final class TCCViewModel: ObservableObject {
     }
 
     var clientsPresent: [String] {
-        Array(Set(records.map { "\($0.clientType)|\($0.client)" })).sorted {
-            Resolver.identity(for: $0.split(separator: "|", maxSplits: 1).last.map(String.init) ?? $0,
-                              clientType: Int($0.prefix(1)) ?? 0).name.lowercased()
-            < Resolver.identity(for: $1.split(separator: "|", maxSplits: 1).last.map(String.init) ?? $1,
-                                clientType: Int($1.prefix(1)) ?? 0).name.lowercased()
-        }
+        // Resolve each key's display name once — sorting with a Resolver call
+        // per comparison is O(n log n) LaunchServices lookups per render.
+        Set(records.map { "\($0.clientType)|\($0.client)" })
+            .map { key -> (String, String) in
+                let p = key.split(separator: "|", maxSplits: 1)
+                let name = Resolver.identity(
+                    for: p.last.map(String.init) ?? key,
+                    clientType: Int(p.first ?? "0") ?? 0).name.lowercased()
+                return (key, name)
+            }
+            .sorted { $0.1 < $1.1 }
+            .map(\.0)
     }
 
     func recordsForService(_ service: String) -> [TCCRecord] {

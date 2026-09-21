@@ -328,7 +328,7 @@ struct ContentView: View {
                         HStack {
                             Text(info.displayName)
                             Spacer()
-                            Text("\(model.recordsForService(svc).count)")
+                            Text("\(model.serviceCounts[svc] ?? 0)")
                                 .foregroundStyle(.secondary)
                                 .font(.callout)
                         }
@@ -346,9 +346,11 @@ struct ContentView: View {
         for row in stores.rows.values.flatMap({ $0 }) where !row.appKey.isEmpty {
             keys.insert("\(row.appKey.hasPrefix("/") ? 1 : 0)|\(row.appKey)")
         }
-        return keys.sorted {
-            Self.keyName($0).lowercased() < Self.keyName($1).lowercased()
-        }
+        // Resolve each key's display name once, then sort — a Resolver call
+        // per comparison is O(n log n) lookups per render.
+        return keys.map { ($0, Self.keyName($0).lowercased()) }
+            .sorted { $0.1 < $1.1 }
+            .map(\.0)
     }
 
     private static func keyParts(_ key: String) -> (client: String, type: Int) {
@@ -378,7 +380,7 @@ struct ContentView: View {
         }, id: \.self) { key in
             let p = Self.keyParts(key)
             let id = Resolver.identity(for: p.client, clientType: p.type)
-            let count = model.recordsForClient(p.client, clientType: p.type).count
+            let count = (model.clientCounts[key] ?? 0)
                 + (counts[p.client] ?? 0)
             Label {
                 HStack {
