@@ -382,17 +382,16 @@ struct ContentView: View {
             let id = Resolver.identity(for: p.client, clientType: p.type)
             let count = (model.clientCounts[key] ?? 0)
                 + (counts[p.client] ?? 0)
-            Label {
-                HStack {
-                    Text(id.name).lineLimit(1)
-                    Spacer()
-                    Text("\(count)").foregroundStyle(.secondary).font(.callout)
-                }
-            } icon: {
+            // Explicit HStack — a 36pt icon would overflow Label's fixed
+            // icon slot and overlap the text.
+            HStack(spacing: 10) {
                 Image(nsImage: id.icon)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 36, height: 36)
+                Text(id.name).lineLimit(1)
+                Spacer()
+                Text("\(count)").foregroundStyle(.secondary).font(.callout)
             }
             .tag(NavItem.client(key))
         }
