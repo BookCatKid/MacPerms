@@ -116,7 +116,9 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
         // Enable/Disable flips the record's disposition enabled bit — the
         // same write the Settings toggle makes — so it applies to every
         // record type (app groupings, dock tiles, tasks), not just launchd
-        // services. Service records additionally sync the launchd override.
+        // services. Enable also clears a stale launchd override on service
+        // records, but Disable never writes one: launchd overrides are a
+        // second kill-switch Settings can't see or undo.
         // Every record is removable: needt btm-remove drops the ItemRecord
         // from the .btm archive (enabled `app` records also lose their
         // System Events 'Open at Login' entry).
@@ -576,15 +578,15 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                 let enable = o == .enable
                 parts.append(OtherOp(
                     title: "\(enable ? "Enable" : "Disable") \(items.count) background item(s)?",
-                    message: "\(names)\n\nFlips the enabled bit of each record's BTM disposition — the same write the System Settings toggle performs — then kills backgroundtaskmanagementd so it re-reads. Launchd-backed items also sync the launchd enable/disable override.",
+                    message: "\(names)\n\nFlips the enabled bit of each record's BTM disposition — the same write the System Settings toggle performs — then kills backgroundtaskmanagementd so it re-reads. Enable also clears any stale launchd override on launchd-backed items so the service can actually run.",
                     destructive: !enable) {
                         Self.each(items, \.identifier) {
                             var msgs = [try OtherStore.btmSetEnabled(
                                 identifier: $0.identifier, enabled: enable)]
-                            if $0.isServiceType {
+                            if enable, $0.isServiceType {
                                 msgs.append(try OtherStore.launchctlSetEnabled(
                                     domain: $0.launchdDomain, label: $0.launchdLabel,
-                                    enabled: enable))
+                                    enabled: true))
                             }
                             return msgs.joined(separator: "; ")
                         }
