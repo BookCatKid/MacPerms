@@ -102,7 +102,7 @@ struct LocalNetworkView: View {
                     }
                     .labelsHidden().fixedSize()
                 ) : nil,
-                supportedOps: [.allow, .deny, .reset],
+                supportedOps: [.allow, .deny, .reset, .remove],
                 onOp: stores.ask)
         }
     }

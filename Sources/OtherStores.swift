@@ -35,6 +35,9 @@ enum OtherStore {
     static func neReset(signingID: String) throws -> String {
         try needt(["ne-reset", signingID])
     }
+    static func neRemove(signingID: String) throws -> String {
+        try needt(["ne-remove", signingID])
+    }
 
     // MARK: Background Items — sfltool dumpbtm (unprivileged)
 

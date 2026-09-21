@@ -140,4 +140,28 @@ enum NEPlist {
         }
         return changed
     }
+
+    /// Remove every array ref pointing at a rule with `signingID` — deletes
+    /// the record from each config's Rules list. The orphaned rule dict
+    /// stays in $objects (unreferenced, harmless — nehelper prunes it on
+    /// its next write).
+    @discardableResult
+    static func removeRule(in objects: NSMutableArray, signingID: String) -> Int {
+        var removed = 0
+        for i in 0..<objects.count {
+            guard let arr = objects[i] as? NSMutableDictionary,
+                  let list = arr["NS.objects"] as? NSMutableArray else { continue }
+            var j = 0
+            while j < list.count {
+                if let uid = uidIndex(list[j]), uid > 0, uid < objects.count,
+                   let r = objects[uid] as? [String: Any],
+                   let suid = uidIndex(r["SigningIdentifier"]), suid < objects.count,
+                   (objects[suid] as? String) == signingID {
+                    list.removeObject(at: j)
+                    removed += 1
+                } else { j += 1 }
+            }
+        }
+        return removed
+    }
 }

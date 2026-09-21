@@ -77,7 +77,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             statusColor: r.denyMulticast ? .red : .green,
             info: r.multicastPreferenceSet ? "Explicit" : "Implicit",
             detail: r.path ?? "",
-            ops: [.allow, .deny, .reset],
+            ops: [.allow, .deny, .reset, .remove],
             payload: r)
         row.appKey = r.signingID
         return row
@@ -315,6 +315,13 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                     message: "\(names)\n\nClears the explicit decision (DenyMulticast restored to default, preference flag cleared) so the app is prompted again.",
                     destructive: true) {
                         try rs.map { try OtherStore.neReset(signingID: $0.signingID) }.joined(separator: "\n")
+                    }
+            case .remove:
+                op = OtherOp(
+                    title: "Remove Local Network record for \(rs.count) app(s)?",
+                    message: "\(names)\n\nDeletes the rule from the networkprivacy configuration entirely — the entry disappears and the app is prompted as if it had never asked.",
+                    destructive: true) {
+                        try rs.map { try OtherStore.neRemove(signingID: $0.signingID) }.joined(separator: "\n")
                     }
             default: break
             }
