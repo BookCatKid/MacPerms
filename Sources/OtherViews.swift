@@ -229,5 +229,12 @@ struct OrphanView: View {
                 supportedOps: [.reset, .remove],
                 onOp: stores.ask)
         }
+        .toolbar {
+            ToolbarItem(placement: .destructiveAction) {
+                Button("Clear All", role: .destructive) { stores.clearOrphans() }
+                    .disabled((stores.rows[.uninstalled] ?? []).isEmpty)
+                    .help("Remove every record its store can delete, reset the rest")
+            }
+        }
     }
 }

@@ -449,11 +449,61 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
     /// on payload type so it works from pane views AND the By App merge.
     func ask(_ o: RowOp, _ sel: [PermRow]) {
         defer { op?.pane = sel.first?.pane ?? .localNetwork }
-        let names = sel.prefix(4).map(\.title).joined(separator: ", ")
-            + (sel.count > 4 ? " +\(sel.count - 4) more" : "")
+        let parts = subOps(o, sel, names: Self.names(for: sel))
+        op = mergedOp(o, sel, parts: parts)
+    }
 
-        // A selection can mix payload types (Not Installed sweep merges every
-        // store). Each type contributes a sub-op; they run under one alert.
+    /// Not Installed sweep bulk clear: delete every record its store can
+    /// remove, reset records that can only be reset, leave read-only rows
+    /// alone — all under one confirmation.
+    func clearOrphans() {
+        let rs = rows[.uninstalled] ?? []
+        let removable = rs.filter { $0.ops.contains(.remove) }
+        let resettable = rs.filter { !$0.ops.contains(.remove) && $0.ops.contains(.reset) }
+        let skipped = rs.count - removable.count - resettable.count
+        let parts = subOps(.remove, removable, names: "")
+            + subOps(.reset, resettable, names: "")
+        guard !parts.isEmpty else {
+            status[.uninstalled] = "Nothing in the list can be removed or reset."
+            return
+        }
+        var msg = "Deletes every record its store can remove and resets records that can only be reset.\n\n"
+            + parts.map(\.title).joined(separator: "\n")
+        if skipped > 0 { msg += "\n\n\(skipped) read-only row(s) left untouched." }
+        op = OtherOp(title: "Clear all possible orphaned records?",
+                     message: msg, destructive: true, run: Self.runAll(parts))
+        op?.pane = .uninstalled
+    }
+
+    private static func names(for sel: [PermRow]) -> String {
+        sel.prefix(4).map(\.title).joined(separator: ", ")
+            + (sel.count > 4 ? " +\(sel.count - 4) more" : "")
+    }
+
+    /// Runs each store's sub-op in sequence, concatenating per-item results.
+    private static func runAll(_ parts: [OtherOp]) -> () throws -> String {
+        {
+            var outs: [String] = []
+            for p in parts { outs.append(try p.run()) }
+            return outs.joined(separator: "\n")
+        }
+    }
+
+    /// Single-type selections keep their dedicated alert; mixed selections get
+    /// one merged confirmation running every sub-op.
+    private func mergedOp(_ o: RowOp, _ sel: [PermRow], parts: [OtherOp]) -> OtherOp? {
+        guard let first = parts.first else { return nil }
+        guard parts.count > 1 else { return first }
+        return OtherOp(
+            title: "\(o.label) \(sel.count) record(s) across \(parts.count) stores?",
+            message: Self.names(for: sel) + "\n\n" + parts.map(\.title).joined(separator: "\n"),
+            destructive: parts.contains(where: { $0.destructive }),
+            run: Self.runAll(parts))
+    }
+
+    /// Each payload type in the selection contributes a sub-op — selections in
+    /// the Not Installed sweep mix stores, so one RowOp can fan out to several.
+    private func subOps(_ o: RowOp, _ sel: [PermRow], names: String) -> [OtherOp] {
         var parts: [OtherOp] = []
 
         if let rs = nonEmpty(sel.compactMap { $0.payload as? TCCRecord }), o == .reset {
@@ -639,19 +689,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             }
         }
 
-        guard let first = parts.first else { return }
-        if parts.count == 1 {
-            op = first
-        } else {
-            op = OtherOp(
-                title: "\(o.label) \(sel.count) record(s) across \(parts.count) stores?",
-                message: names + "\n\n" + parts.map(\.title).joined(separator: "\n"),
-                destructive: parts.contains(where: { $0.destructive })) {
-                    var outs: [String] = []
-                    for p in parts { outs.append(try p.run()) }
-                    return outs.joined(separator: "\n")
-                }
-        }
+        return parts
     }
 
     /// Execute the confirmed op, then reload every pane it could have touched.
