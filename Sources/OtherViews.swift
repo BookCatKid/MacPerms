@@ -45,6 +45,7 @@ private struct OtherOpSheet: View {
             Text(op.title).font(.title2.bold())
             if !op.message.isEmpty {
                 Text(op.message).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if !op.items.isEmpty {
                 ScrollView {

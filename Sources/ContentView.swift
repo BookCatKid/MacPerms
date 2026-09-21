@@ -422,6 +422,7 @@ struct ConfirmSheet: View {
             Text("Confirm changes").font(.title2.bold())
             Text("The following records will be modified. Every change is verified by reading the database back after writing.")
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
@@ -444,9 +445,10 @@ struct ConfirmSheet: View {
             .frame(maxHeight: 220)
 
             if (model.pending ?? []).contains(where: { $0.db.kind == .system }) {
-                Label("System-database changes require administrator authorization (one prompt).",
+                Label("System-database records — written directly as root; requires SIP disabled.",
                       systemImage: "lock.shield")
                     .font(.callout).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Toggle("Restart tccd after applying (drops daemon caches)", isOn: $restartTCCD)
