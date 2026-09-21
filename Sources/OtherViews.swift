@@ -28,19 +28,67 @@ struct OtherOp: Identifiable {
     let destructive: Bool
     /// Pane whose status area receives the result — set from the rows' pane.
     var pane: OtherPane = .localNetwork
+    /// Rows this op touches — shown as the per-item list in the sheet.
+    var items: [PermRow] = []
     let run: () throws -> String
 }
 
-/// Generic confirmation alert wiring for OtherOp.
+/// Confirmation sheet matching the TCC ConfirmSheet look: title, explanation,
+/// per-item list with icons, Apply/Cancel.
+private struct OtherOpSheet: View {
+    let op: OtherOp
+    let perform: () -> Void
+    let cancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(op.title).font(.title2.bold())
+            if !op.message.isEmpty {
+                Text(op.message).foregroundStyle(.secondary)
+            }
+            if !op.items.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(op.items) { r in
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(nsImage: r.icon)
+                                    .resizable().frame(width: 20, height: 20)
+                                VStack(alignment: .leading) {
+                                    Text(r.title).bold()
+                                    Text([r.service, r.subtitle]
+                                            .filter { !$0.isEmpty }
+                                            .joined(separator: " · "))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                        .lineLimit(1).truncationMode(.middle)
+                                }
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 220)
+            }
+            HStack {
+                Button("Cancel", role: .cancel) { cancel() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Apply", role: op.destructive ? .destructive : nil) { perform() }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(width: 480)
+    }
+}
+
+/// Generic confirmation sheet wiring for OtherOp.
 private struct OtherOpAlert: ViewModifier {
     @Binding var op: OtherOp?
     let perform: () -> Void
     func body(content: Content) -> some View {
-        content.alert(op?.title ?? "", isPresented: Binding(
-            get: { op != nil }, set: { if !$0 { op = nil } })) {
-            Button("Apply", role: op?.destructive == true ? .destructive : nil) { perform() }
-            Button("Cancel", role: .cancel) { op = nil }
-        } message: { Text(op?.message ?? "") }
+        content.sheet(item: $op) { o in
+            OtherOpSheet(op: o, perform: perform, cancel: { op = nil })
+        }
     }
 }
 extension View {

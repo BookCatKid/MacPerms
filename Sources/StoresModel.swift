@@ -476,7 +476,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
     /// on payload type so it works from pane views AND the By App merge.
     func ask(_ o: RowOp, _ sel: [PermRow]) {
         defer { op?.pane = sel.first?.pane ?? .localNetwork }
-        let parts = subOps(o, sel, names: Self.names(for: sel))
+        let parts = subOps(o, sel)
         op = mergedOp(o, sel, parts: parts)
     }
 
@@ -488,8 +488,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
         let removable = rs.filter { $0.ops.contains(.remove) }
         let resettable = rs.filter { !$0.ops.contains(.remove) && $0.ops.contains(.reset) }
         let skipped = rs.count - removable.count - resettable.count
-        let parts = subOps(.remove, removable, names: "")
-            + subOps(.reset, resettable, names: "")
+        let parts = subOps(.remove, removable) + subOps(.reset, resettable)
         guard !parts.isEmpty else {
             status[.uninstalled] = "Nothing in the list can be removed or reset."
             return
@@ -498,13 +497,9 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             + parts.map(\.title).joined(separator: "\n")
         if skipped > 0 { msg += "\n\n\(skipped) read-only row(s) left untouched." }
         op = OtherOp(title: "Clear all possible orphaned records?",
-                     message: msg, destructive: true, run: Self.runAll(parts))
+                     message: msg, destructive: true,
+                     items: removable + resettable, run: Self.runAll(parts))
         op?.pane = .uninstalled
-    }
-
-    private static func names(for sel: [PermRow]) -> String {
-        sel.prefix(4).map(\.title).joined(separator: ", ")
-            + (sel.count > 4 ? " +\(sel.count - 4) more" : "")
     }
 
     /// Runs each store's sub-op in sequence, concatenating per-item results.
@@ -523,21 +518,21 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
         guard parts.count > 1 else { return first }
         return OtherOp(
             title: "\(o.label) \(sel.count) record(s) across \(parts.count) stores?",
-            message: Self.names(for: sel) + "\n\n" + parts.map(\.title).joined(separator: "\n"),
+            message: parts.map(\.title).joined(separator: "\n"),
             destructive: parts.contains(where: { $0.destructive }),
-            run: Self.runAll(parts))
+            items: sel, run: Self.runAll(parts))
     }
 
     /// Each payload type in the selection contributes a sub-op — selections in
     /// the Not Installed sweep mix stores, so one RowOp can fan out to several.
-    private func subOps(_ o: RowOp, _ sel: [PermRow], names: String) -> [OtherOp] {
+    private func subOps(_ o: RowOp, _ sel: [PermRow]) -> [OtherOp] {
         var parts: [OtherOp] = []
 
         if let rs = nonEmpty(sel.compactMap { $0.payload as? TCCRecord }), o == .reset {
             parts.append(OtherOp(
                 title: "Delete \(rs.count) TCC record(s)?",
-                message: "\(names)\n\nDeletes the TCC records from their databases — each delete is verified by read-back.",
-                destructive: true) {
+                message: "Deletes the TCC records from their databases — each delete is verified by read-back.",
+                destructive: true, items: sel.filter { $0.payload is TCCRecord }) {
                     let out = Self.each(rs, \.id) { try Self.tccDelete($0) }
                     Elevation.restartUserTCCD()
                     return out
@@ -550,8 +545,8 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                 let allow = o == .allow
                 parts.append(OtherOp(
                     title: "\(allow ? "Allow" : "Deny") Local Network for \(rs.count) app(s)?",
-                    message: "\(names)\n\nSets DenyMulticast=\(!allow) on the per-user networkprivacy configuration.",
-                    destructive: !allow) {
+                    message: "Sets DenyMulticast=\(!allow) on the per-user networkprivacy configuration.",
+                    destructive: !allow, items: sel.filter { $0.payload is NEPlist.Rule }) {
                         Self.each(rs, \.signingID) {
                             try OtherStore.neSet(signingID: $0.signingID, allow: allow)
                         }
@@ -559,8 +554,8 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             case .reset:
                 parts.append(OtherOp(
                     title: "Reset Local Network for \(rs.count) app(s)?",
-                    message: "\(names)\n\nClears the explicit decision (DenyMulticast restored to default, preference flag cleared) so the app is prompted again.",
-                    destructive: true) {
+                    message: "Clears the explicit decision (DenyMulticast restored to default, preference flag cleared) so the app is prompted again.",
+                    destructive: true, items: sel.filter { $0.payload is NEPlist.Rule }) {
                         Self.each(rs, \.signingID) {
                             try OtherStore.neReset(signingID: $0.signingID)
                         }
@@ -568,8 +563,8 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             case .remove:
                 parts.append(OtherOp(
                     title: "Remove Local Network record for \(rs.count) app(s)?",
-                    message: "\(names)\n\nDeletes the rule from the networkprivacy configuration entirely — the entry disappears and the app is prompted as if it had never asked.",
-                    destructive: true) {
+                    message: "Deletes the rule from the networkprivacy configuration entirely — the entry disappears and the app is prompted as if it had never asked.",
+                    destructive: true, items: sel.filter { $0.payload is NEPlist.Rule }) {
                         Self.each(rs, \.signingID) {
                             try OtherStore.neRemove(signingID: $0.signingID)
                         }
@@ -584,8 +579,8 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                 let enable = o == .enable
                 parts.append(OtherOp(
                     title: "\(enable ? "Enable" : "Disable") \(items.count) background item(s)?",
-                    message: "\(names)\n\nWrites the same disposition bits the System Settings toggle writes — enabled+allowed for on, clears allowed for off — cascading to child records, then kills backgroundtaskmanagementd so it re-reads. Enable also clears any stale launchd override on launchd-backed items so the service can actually run.",
-                    destructive: !enable) {
+                    message: "Writes the same disposition bits the System Settings toggle writes — enabled+allowed for on, clears allowed for off — cascading to child records, then kills backgroundtaskmanagementd so it re-reads. Enable also clears any stale launchd override on launchd-backed items so the service can actually run.",
+                    destructive: !enable, items: sel.filter { $0.payload is BTMItem }) {
                         Self.each(items, \.identifier) {
                             var msgs = [try OtherStore.btmSetEnabled(
                                 identifier: $0.identifier, enabled: enable)]
@@ -600,8 +595,8 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             case .remove:
                 parts.append(OtherOp(
                     title: "Remove \(items.count) background item record(s)?",
-                    message: "\(names)\n\nDeletes each ItemRecord from the .btm store and kills backgroundtaskmanagementd so it re-reads. Enabled 'Open at Login' entries are also removed via System Events. Live apps may re-register their record on next launch.",
-                    destructive: true) {
+                    message: "Deletes each ItemRecord from the .btm store and kills backgroundtaskmanagementd so it re-reads. Enabled 'Open at Login' entries are also removed via System Events. Live apps may re-register their record on next launch.",
+                    destructive: true, items: sel.filter { $0.payload is BTMItem }) {
                         Self.each(items, { "\($0.uid)|\($0.identifier)" }) {
                             var msgs: [String] = []
                             if $0.type.contains("app"), $0.enabled,
@@ -622,8 +617,8 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                 let enable = o == .enable
                 parts.append(OtherOp(
                     title: "\(enable ? "Enable" : "Disable") \(xs.count) extension(s)?",
-                    message: "\(names)\n\nRuns `pluginkit -e \(enable ? "use" : "ignore") -i <id>` in the console user's pkd domain. The list is re-read after writing.",
-                    destructive: !enable) {
+                    message: "Runs `pluginkit -e \(enable ? "use" : "ignore") -i <id>` in the console user's pkd domain. The list is re-read after writing.",
+                    destructive: !enable, items: sel.filter { $0.payload is AppExtension }) {
                         Self.each(xs, \.extID) {
                             let out = try OtherStore.extSetEnabled(extID: $0.extID, enabled: enable)
                             return out.isEmpty ? "OK" : out
@@ -632,8 +627,8 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             case .reset:
                 parts.append(OtherOp(
                     title: "Reset election for \(xs.count) extension(s)?",
-                    message: "\(names)\n\nRuns `pluginkit -e default -i <id>` — forgets your use/ignore choice so the extension returns to pkd's default election.",
-                    destructive: true) {
+                    message: "Runs `pluginkit -e default -i <id>` — forgets your use/ignore choice so the extension returns to pkd's default election.",
+                    destructive: true, items: sel.filter { $0.payload is AppExtension }) {
                         Self.each(xs, \.extID) {
                             let out = try OtherStore.extResetElection(extID: $0.extID)
                             return out.isEmpty ? "OK" : out
@@ -642,8 +637,8 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             case .remove:
                 parts.append(OtherOp(
                     title: "Unregister \(xs.count) extension(s)?",
-                    message: "\(names)\n\nRuns `pluginkit -r <path>` — removes the extension from pkd's registry. It re-registers on next host-app launch or pkd rescan.",
-                    destructive: true) {
+                    message: "Runs `pluginkit -r <path>` — removes the extension from pkd's registry. It re-registers on next host-app launch or pkd rescan.",
+                    destructive: true, items: sel.filter { $0.payload is AppExtension }) {
                         Self.each(xs, \.extID) {
                             let out = try OtherStore.extUnregister(path: $0.path)
                             return out.isEmpty ? "removed" : out
@@ -668,7 +663,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                     parts.append(OtherOp(
                         title: "\(verb) Gatekeeper label(s): \(labels.joined(separator: ", "))?",
                         message: "Runs `spctl \(flag.joined(separator: " ")) --label` for each label as root (affects \(rs.count) listed rule(s)).",
-                        destructive: o != .enable) {
+                        destructive: o != .enable, items: sel.filter { $0.payload is GKRule }) {
                             Self.each(labels, { $0 }) { try OtherStore.gk(flag + ["--label", $0]) }
                         })
                 }
@@ -681,15 +676,15 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                 let allow = o == .allow
                 parts.append(OtherOp(
                     title: "\(allow ? "Allow" : "Deny") Location Services for \(cl.count) client(s)?",
-                    message: "\(names)\n\nWrites Authorized=\(allow) to the locationd clients store as root. UNVERIFIED write path — locationd may ignore it until restarted. Relaunch the app to test.",
-                    destructive: !allow) {
+                    message: "Writes Authorized=\(allow) to the locationd clients store as root. UNVERIFIED write path — locationd may ignore it until restarted. Relaunch the app to test.",
+                    destructive: !allow, items: sel.filter { $0.payload is LocationClient }) {
                         Self.each(cl, \.key) { try OtherStore.locSet(key: $0.key, allow: allow) }
                     })
             case .remove:
                 parts.append(OtherOp(
                     title: "Remove \(cl.count) Location Services record(s)?",
-                    message: "\(names)\n\nDeletes the client entry from the locationd stores entirely — the app re-prompts next time it requests location.",
-                    destructive: true) {
+                    message: "Deletes the client entry from the locationd stores entirely — the app re-prompts next time it requests location.",
+                    destructive: true, items: sel.filter { $0.payload is LocationClient }) {
                         Self.each(cl, \.key) { try OtherStore.locRemove(key: $0.key) }
                     })
             default: break
@@ -702,8 +697,8 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                 let allow = o == .allow
                 parts.append(OtherOp(
                     title: "\(allow ? "Allow" : "Disable") notifications for \(apps.count) app(s)?",
-                    message: "\(names)\n\n\(allow ? "Sets" : "Clears") the allow-notifications flag (bit 25) in the usernoted store and restarts usernoted + cfprefsd to re-read it.",
-                    destructive: !allow) {
+                    message: "\(allow ? "Sets" : "Clears") the allow-notifications flag (bit 25) in the usernoted store and restarts usernoted + cfprefsd to re-read it.",
+                    destructive: !allow, items: sel.filter { $0.payload is NotificationApp }) {
                         Self.each(apps, \.bundleID) {
                             try OtherStore.ncSet(bundleID: $0.bundleID, allow: allow)
                         }
@@ -711,8 +706,8 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             case .reset, .remove:
                 parts.append(OtherOp(
                     title: "Reset notification settings for \(apps.count) app(s)?",
-                    message: "\(names)\n\nRemoves the app's entry from the usernoted store entirely — it re-registers and re-prompts on next launch.",
-                    destructive: true) {
+                    message: "Removes the app's entry from the usernoted store entirely — it re-registers and re-prompts on next launch.",
+                    destructive: true, items: sel.filter { $0.payload is NotificationApp }) {
                         Self.each(apps, \.bundleID) {
                             try OtherStore.ncReset(bundleID: $0.bundleID)
                         }
