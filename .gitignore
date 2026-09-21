@@ -1,5 +1,6 @@
 build/
 .DS_Store
+design/icon-options*/
 
 # compiled binaries checked in next to their sources
 Tests/selftest

@@ -11,7 +11,7 @@ IDENTITY := dev.macperms.app
 
 all: $(BUNDLE)
 
-$(BUNDLE): $(SOURCES) Helper/main.swift Info.plist Resources/tcc-system-write.sh
+$(BUNDLE): $(SOURCES) Helper/main.swift Info.plist Resources/tcc-system-write.sh Resources/AppIcon.icns
 	@mkdir -p "$(MACOS)" "$(RES)"
 	swiftc -O -o "$(MACOS)/$(APP)" $(SOURCES) \
 		-target arm64-apple-macosx15.0 -sdk $(SDK)
@@ -19,6 +19,7 @@ $(BUNDLE): $(SOURCES) Helper/main.swift Info.plist Resources/tcc-system-write.sh
 		-target arm64-apple-macosx15.0 -sdk $(SDK)
 	@cp Info.plist "$(BUNDLE)/Contents/Info.plist"
 	@cp Resources/tcc-system-write.sh "$(RES)/tcc-system-write.sh"
+	@cp Resources/AppIcon.icns "$(RES)/AppIcon.icns"
 	@chmod +x "$(RES)/tcc-system-write.sh"
 	codesign -s - --identifier $(IDENTITY) -f "$(BUNDLE)"
 	@echo "Built $(BUNDLE)"

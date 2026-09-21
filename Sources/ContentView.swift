@@ -176,6 +176,9 @@ struct ContentView: View {
                                 HStack {
                                     Text(pane.rawValue)
                                     Spacer()
+                                    Text("\(stores.rows[pane]?.count ?? 0)")
+                                        .foregroundStyle(.secondary)
+                                        .font(.callout)
                                 }
                             } icon: { Image(systemName: pane.symbol) }
                             .tag(NavItem.other(pane))

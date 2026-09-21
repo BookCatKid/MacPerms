@@ -1,5 +1,7 @@
 # MacPerms
 
+<img src="design/icon.png" width="160" align="right">
+
 A native macOS app for inspecting and managing Transparency, Consent & Control (TCC)
 privacy permissions — Accessibility, Screen Recording, Full Disk Access, Automation,
 Input Monitoring, Camera, Microphone, and ~110 other services — **plus** the
