@@ -30,6 +30,15 @@ func commitNE(_ objects: NSMutableArray) throws {
         throw NSError(domain: "needt", code: 5, userInfo: [NSLocalizedDescriptionKey: "SCPreferencesCommitChanges failed"])
     }
     SCPreferencesApplyChanges(prefs)
+    // nehelper keeps the parsed archive in memory and re-flushes it on
+    // unrelated events — resurrecting rules we just edited/removed. SIGKILL
+    // (not TERM, which could trigger a graceful-exit flush) forces a reload
+    // from disk.
+    let k = Process()
+    k.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+    k.arguments = ["-9", "nehelper"]
+    try? k.run()
+    k.waitUntilExit()
 }
 
 func mutableObjects() throws -> NSMutableArray {
