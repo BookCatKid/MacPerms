@@ -71,14 +71,15 @@ enum Elevation {
     }
 
     static func restartSystemTCCD() throws {
-        try runAsRoot("/usr/bin/killall tccd")
+        try runAsRoot("/usr/bin/killall -9 tccd")
     }
 
-    /// Restart the per-user tccd (no privileges needed — we own it).
+    /// SIGKILL tccd — TERM risks it flushing a stale in-memory access table
+    /// over records we just deleted.
     static func restartUserTCCD() {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-        proc.arguments = ["tccd"]
+        proc.arguments = ["-9", "tccd"]
         try? proc.run()
     }
 

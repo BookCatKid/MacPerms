@@ -48,6 +48,21 @@ enum OtherStore {
         var cur: [String: String] = [:]
         var curID = ""
 
+        // dumpbtm renders home-relative paths as "/Users/<uid>/..." — a
+        // literal path that never exists. Map it back to that uid's real
+        // home so existence checks and the Detail column show the truth.
+        func realPath(_ s: String?) -> String? {
+            guard let s else { return nil }
+            var p = s
+            if p.hasPrefix("file://"), let u = URL(string: p) { p = u.path }
+            guard p.hasPrefix("/Users/") else { return p }
+            let rest = p.dropFirst("/Users/".count)
+            guard let slash = rest.firstIndex(of: "/"),
+                  let uid = Int(rest[..<slash]),
+                  let pw = getpwuid(uid_t(uid)) else { return p }
+            return String(cString: pw.pointee.pw_dir) + rest[slash...]
+        }
+
         func flush() {
             guard let name = cur["Name"] else { cur = [:]; return }
             var disp = 0
@@ -63,11 +78,11 @@ enum OtherStore {
                 type: cur["Type"] ?? "",
                 disposition: disp,
                 identifier: cur["Identifier"] ?? "",
-                url: nilIfNull(cur["URL"]),
+                url: realPath(nilIfNull(cur["URL"])),
                 bundleID: nilIfNull(cur["Bundle Identifier"]),
                 parent: nilIfNull(cur["Parent Identifier"]),
                 lastUse: nilIfNull(cur["Last Use"]),
-                executable: nilIfNull(cur["Executable Path"])))
+                executable: realPath(nilIfNull(cur["Executable Path"]))))
             cur = [:]
         }
 
@@ -91,6 +106,13 @@ enum OtherStore {
 
     static func resetBTM() throws -> String {
         try Elevation.runAsRoot("/usr/bin/sfltool resetbtm")
+    }
+
+    /// Delete one BTM record by identifier — drops the ItemRecord's UID from
+    /// the .btm archive's record array (same surgery pattern as the NE store)
+    /// and SIGKILLs backgroundtaskmanagementd so it re-reads.
+    static func btmRemove(identifier: String) throws -> String {
+        try needt(["btm-remove", identifier])
     }
 
     // MARK: launchd disabled registry — the real per-item on/off switch
@@ -216,9 +238,10 @@ enum OtherStore {
         if geteuid() == 0 {
             chown(ncPrefsPath, uid_t(consoleUID()), gid_t(bitPattern: -1))
         }
-        // usernoted + cfprefsd cache the suite — restart them to re-read.
+        // usernoted + cfprefsd cache the suite — SIGKILL (not TERM, which can
+        // flush a stale copy over our edit) forces them to re-read.
         _ = try? Elevation.runAsRoot(
-            "/usr/bin/killall -u \(Elevation.shellQuote(consoleUserName())) usernoted cfprefsd")
+            "/usr/bin/killall -9 -u \(Elevation.shellQuote(consoleUserName())) usernoted cfprefsd")
     }
 
     /// Toggle the "allow notifications" bit (25) on one app's flags.

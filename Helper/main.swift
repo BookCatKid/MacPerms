@@ -6,6 +6,7 @@
 //   needt loc-dump                          dump /var/db/locationd plists as JSON
 //   needt loc-set  <key> allow|deny         Location Services authorization
 //   needt loc-remove <key>                  delete a locationd client record
+//   needt btm-remove <identifier>           delete a BTM ItemRecord (.btm surgery)
 //   needt gk <spctl args...>                Gatekeeper ops via /usr/sbin/spctl
 import Foundation
 import SystemConfiguration
@@ -13,6 +14,16 @@ import SystemConfiguration
 let args = Array(CommandLine.arguments.dropFirst())
 func fail(_ m: String) -> Never { FileHandle.standardError.write("ERR: \(m)\n".data(using: .utf8)!); exit(1) }
 guard let cmd = args.first else { fail("usage") }
+
+/// SIGKILL a daemon that caches its store in memory. TERM lets it flush a
+/// stale copy on the way out — resurrecting records we just removed.
+func sigkill(_ name: String) {
+    let k = Process()
+    k.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+    k.arguments = ["-9", name]
+    try? k.run()
+    k.waitUntilExit()
+}
 
 func commitNE(_ objects: NSMutableArray) throws {
     guard let prefs = SCPreferencesCreate(nil, "needt" as CFString,
@@ -34,11 +45,7 @@ func commitNE(_ objects: NSMutableArray) throws {
     // unrelated events — resurrecting rules we just edited/removed. SIGKILL
     // (not TERM, which could trigger a graceful-exit flush) forces a reload
     // from disk.
-    let k = Process()
-    k.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-    k.arguments = ["-9", "nehelper"]
-    try? k.run()
-    k.waitUntilExit()
+    sigkill("nehelper")
 }
 
 func mutableObjects() throws -> NSMutableArray {
@@ -55,6 +62,9 @@ switch cmd {
 case "ne-set":
     guard args.count == 3, let id = args.dropFirst().first else { fail("args") }
     let allow = args[2] == "allow"
+    // Kill before reading too: a dirty in-memory copy flushed between our
+    // parse and commit would silently resurrect the record.
+    sigkill("nehelper")
     let objects = try mutableObjects()
     let n = NEPlist.setRule(in: objects, signingID: id, deny: !allow, preferenceSet: true)
     guard n > 0 else { fail("no rule for \(id)") }
@@ -63,6 +73,7 @@ case "ne-set":
 
 case "ne-reset":
     guard args.count == 2 else { fail("args") }
+    sigkill("nehelper")
     let objects = try mutableObjects()
     let n = NEPlist.setRule(in: objects, signingID: args[1], deny: true, preferenceSet: false)
     guard n > 0 else { fail("no rule for \(args[1])") }
@@ -71,6 +82,7 @@ case "ne-reset":
 
 case "ne-remove":
     guard args.count == 2 else { fail("args") }
+    sigkill("nehelper")
     let objects = try mutableObjects()
     let n = NEPlist.removeRule(in: objects, signingID: args[1])
     if n == 0 {
@@ -111,6 +123,9 @@ case "loc-dump":
 case "loc-set":
     guard args.count == 3 else { fail("args") }
     let allow = args[2] == "allow"
+    // locationd caches its client registry and rewrites the plists on
+    // unrelated events — kill it before and after, like nehelper.
+    sigkill("locationd")
     var changed = false
     for name in ["clients.plist", "clients-b.plist"] {
         let p = "/var/db/locationd/\(name)"
@@ -123,10 +138,12 @@ case "loc-set":
         }
     }
     guard changed else { fail("client not found in locationd stores") }
+    sigkill("locationd")
     print("OK")
 
 case "loc-remove":
     guard args.count == 2 else { fail("args") }
+    sigkill("locationd")
     var changed = false
     for name in ["clients.plist", "clients-b.plist"] {
         let p = "/var/db/locationd/\(name)"
@@ -137,7 +154,51 @@ case "loc-remove":
         changed = true
     }
     guard changed else { fail("client not found in locationd stores") }
+    sigkill("locationd")
     print("OK removed client")
+
+case "btm-remove":
+    // Delete a BTM ItemRecord by its identifier ("2.com.foo.bar") from every
+    // BackgroundItems-*.btm archive. Records are single-referenced — dropping
+    // the UID from the NS.objects array removes the record. Then SIGKILL
+    // backgroundtaskmanagementd so it re-reads instead of flushing a stale copy.
+    guard args.count == 2 else { fail("args") }
+    let target = args[1]
+    var removed = 0
+    sigkill("backgroundtaskmanagementd")
+    let dir = "/var/db/com.apple.backgroundtaskmanagement"
+    for f in (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
+             where f.hasSuffix(".btm") {
+        let p = "\(dir)/\(f)"
+        guard let data = FileManager.default.contents(atPath: p),
+              let plist = try? PropertyListSerialization.propertyList(
+                  from: data, options: [.mutableContainers], format: nil)
+                      as? NSMutableDictionary,
+              let objects = plist["$objects"] as? NSMutableArray else { continue }
+        var changed = false
+        for i in 0..<objects.count {
+            guard let arr = objects[i] as? NSMutableDictionary,
+                  let list = arr["NS.objects"] as? NSMutableArray else { continue }
+            var j = 0
+            while j < list.count {
+                if let uid = NEPlist.uidIndex(list[j]), uid > 0, uid < objects.count,
+                   let rec = objects[uid] as? [String: Any],
+                   let iuid = NEPlist.uidIndex(rec["identifier"]), iuid < objects.count,
+                   (objects[iuid] as? String) == target {
+                    list.removeObject(at: j)
+                    removed += 1
+                    changed = true
+                } else { j += 1 }
+            }
+        }
+        if changed {
+            let out = try PropertyListSerialization.data(
+                fromPropertyList: plist, format: .binary, options: 0)
+            try out.write(to: URL(fileURLWithPath: p))
+        }
+    }
+    sigkill("backgroundtaskmanagementd")
+    print(removed == 0 ? "OK already absent" : "OK removed \(removed) record(s)")
 
 case "gk":
     let proc = Process()

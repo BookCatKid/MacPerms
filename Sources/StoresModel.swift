@@ -116,11 +116,11 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
         let enabled = launchdState ?? i.enabled
         // launchctl can disable any service label — the entry is created
         // on first write; grouping records (developer/app) are not services.
-        // `app` records whose disposition is enabled ARE the "Open at Login"
-        // entries Settings lists — removable via System Events.
-        var ops: Set<RowOp> = []
-        if i.isServiceType { ops = [.enable, .disable] }
-        else if i.type.contains("app"), i.enabled { ops = [.remove] }
+        // Every record is removable: needt btm-remove drops the ItemRecord
+        // from the .btm archive (enabled `app` records also lose their
+        // System Events 'Open at Login' entry).
+        var ops: Set<RowOp> = [.remove]
+        if i.isServiceType { ops.formUnion([.enable, .disable]) }
         var row = PermRow(
             id: i.id, icon: id.icon, title: i.name, subtitle: i.identifier,
             service: type,
@@ -314,26 +314,31 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
 
     // MARK: - Not Installed sweep
 
+    nonisolated private static func orphanPathExists(_ p: String?) -> Bool {
+        guard let p, !p.isEmpty else { return false }
+        if p.hasPrefix("file://"), let u = URL(string: p) {
+            return FileManager.default.fileExists(atPath: u.path)
+        }
+        return FileManager.default.fileExists(atPath: p)
+    }
+    nonisolated private static func orphanResolves(_ bid: String?) -> Bool {
+        guard let bid, !bid.isEmpty, !bid.hasPrefix("/") else { return false }
+        return Resolver.identity(for: bid, clientType: 0).appURL != nil
+    }
+    nonisolated private static func orphanSystemID(_ bid: String) -> Bool {
+        bid.hasPrefix("com.apple.") || bid.hasPrefix("com.microsoft.")
+    }
+
     /// A row is orphaned when nothing it points at still exists: every known
     /// filesystem path is gone AND the bundle id no longer resolves through
     /// LaunchServices. Bundle-id-only records are conservative — an
     /// unresolvable com.apple.* id is a system record, not an orphan.
-    nonisolated static func isOrphan(_ r: PermRow) -> Bool {
-        let fm = FileManager.default
-        func exists(_ p: String?) -> Bool {
-            guard let p, !p.isEmpty else { return false }
-            if p.hasPrefix("file://"), let u = URL(string: p) {
-                return fm.fileExists(atPath: u.path)
-            }
-            return fm.fileExists(atPath: p)
-        }
-        func resolves(_ bid: String?) -> Bool {
-            guard let bid, !bid.isEmpty, !bid.hasPrefix("/") else { return false }
-            return Resolver.identity(for: bid, clientType: 0).appURL != nil
-        }
-        func systemID(_ bid: String) -> Bool {
-            bid.hasPrefix("com.apple.") || bid.hasPrefix("com.microsoft.")
-        }
+    /// `liveParents`: bundle ids of BTM records that are demonstrably alive —
+    /// helper/plugin records carry relative paths that can't be verified, so
+    /// a live host prefix (com.host.App covering com.host.App.Helper) means
+    /// the record still has its app.
+    nonisolated static func isOrphan(_ r: PermRow, liveParents: Set<String> = []) -> Bool {
+        let exists = orphanPathExists, resolves = orphanResolves, systemID = orphanSystemID
         switch r.payload {
         case let t as TCCRecord:
             if t.clientType == 1 || t.client.hasPrefix("/") { return !exists(t.client) }
@@ -343,6 +348,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
         case let i as BTMItem:
             guard i.executable != nil || i.url != nil || i.bundleID != nil else { return false }
             if exists(i.executable) || exists(i.url) { return false }
+            if liveParents.contains(where: { i.launchdLabel.hasPrefix($0) }) { return false }
             guard let bid = i.bundleID else { return true }
             return !systemID(bid) && !resolves(bid)
         case let x as AppExtension:
@@ -393,9 +399,22 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
     /// prefixed with the source store since the sweep list mixes everything.
     nonisolated private func finishOrphans(rows snapshot: [OtherPane: [PermRow]],
                                            tcc tccRecs: [TCCRecord]) async throws {
+        // Live BTM host bundle ids — their helper/plugin records can't be
+        // verified by path (relative URLs) so a live host protects them.
+        var liveParents = Set<String>()
+        for (_, rs) in snapshot {
+            for r in rs {
+                guard let i = r.payload as? BTMItem,
+                      let bid = i.bundleID, !bid.isEmpty else { continue }
+                if Self.orphanPathExists(i.url) || Self.orphanPathExists(i.executable)
+                    || Self.orphanResolves(bid) {
+                    liveParents.insert(bid)
+                }
+            }
+        }
         var out: [PermRow] = []
         for (pane, rs) in snapshot where pane != .uninstalled && pane != .gatekeeper {
-            for var r in rs where Self.isOrphan(r) {
+            for var r in rs where Self.isOrphan(r, liveParents: liveParents) {
                 r.service = "\(pane.rawValue) · \(r.service)"
                 r.ops.formIntersection([.reset, .remove])
                 r.pane = .uninstalled
@@ -568,18 +587,20 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                         })
                 }
             case .remove:
-                let apps = items.filter { $0.type.contains("app") && $0.enabled }
-                if !apps.isEmpty {
-                    parts.append(OtherOp(
-                        title: "Remove \(apps.count) login item(s)?",
-                        message: "\(names)\n\nDeletes the 'Open at Login' entry via System Events — the same as '-' in Settings → Login Items.",
-                        destructive: true) {
-                            Self.each(apps, \.name) {
-                                let out = try OtherStore.seRemoveLoginItem(name: $0.name)
-                                return out.isEmpty ? "removed" : out
+                parts.append(OtherOp(
+                    title: "Remove \(items.count) background item record(s)?",
+                    message: "\(names)\n\nDeletes each ItemRecord from the .btm store and kills backgroundtaskmanagementd so it re-reads. Enabled 'Open at Login' entries are also removed via System Events. Live apps may re-register their record on next launch.",
+                    destructive: true) {
+                        Self.each(items, { "\($0.uid)|\($0.identifier)" }) {
+                            var msgs: [String] = []
+                            if $0.type.contains("app"), $0.enabled,
+                               let out = try? OtherStore.seRemoveLoginItem(name: $0.name) {
+                                msgs.append(out.isEmpty ? "login item removed" : out)
                             }
-                        })
-                }
+                            msgs.append(try OtherStore.btmRemove(identifier: $0.identifier))
+                            return msgs.joined(separator: "; ")
+                        }
+                    })
             default: break
             }
         }
