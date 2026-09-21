@@ -60,17 +60,27 @@ case "ne-reset":
     print("OK reset \(n) rule(s)")
 
 case "loc-dump":
+    // locationd plists embed NSData (requirement blobs) and NSDate — neither is
+    // JSON-encodable, and JSONSerialization raises an uncatchable NSException
+    // rather than a Swift error. Sanitize recursively before encoding.
+    func jsonSafe(_ v: Any) -> Any {
+        switch v {
+        case let d as Data: return d.base64EncodedString()
+        case let d as Date: return ISO8601DateFormatter().string(from: d)
+        case let dict as [String: Any]: return dict.mapValues(jsonSafe)
+        case let arr as [Any]: return arr.map(jsonSafe)
+        case is NSString, is NSNumber, is NSNull: return v
+        default: return String(describing: v)
+        }
+    }
     let dir = "/var/db/locationd"
     let fm = FileManager.default
     var out: [String: Any] = [:]
     for f in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] where f.hasSuffix(".plist") {
         let p = "\(dir)/\(f)"
         if let d = fm.contents(atPath: p),
-           let obj = try? PropertyListSerialization.propertyList(from: d, format: nil),
-           let j = try? JSONSerialization.data(withJSONObject: obj),
-           let s = String(data: j, encoding: .utf8) {
-            out[f] = try? JSONSerialization.jsonObject(with: j)
-            _ = s
+           let obj = try? PropertyListSerialization.propertyList(from: d, format: nil) {
+            out[f] = jsonSafe(obj)
         }
     }
     let j = try JSONSerialization.data(withJSONObject: out, options: .prettyPrinted)

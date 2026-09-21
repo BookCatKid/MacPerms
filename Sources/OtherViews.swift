@@ -368,9 +368,10 @@ struct GatekeeperView: View {
 // MARK: - Location Services (locationd / /var/db/locationd)
 
 struct LocationView: View {
+    @EnvironmentObject var model: TCCViewModel
     @State private var rows: [PermRow] = []
     @State private var status = ""
-    @State private var loaded = false
+    @State private var requested = false
     @State private var op: OtherOp?
 
     /// Identity resolution hits LaunchServices — run off the main thread.
@@ -389,26 +390,24 @@ struct LocationView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if !loaded {
-                Spacer()
-                Button("Load clients (requires admin)…") { load() }
-                Spacer()
-            } else {
-                UnifiedListView(
-                    rows: rows,
-                    pageActions: [
-                        .init(label: "Reload (admin)", destructive: false) { load() }
-                    ],
-                    supportedOps: [.allow, .deny],
-                    onOp: { o, sel in
-                        for c in sel.compactMap({ $0.payload as? LocationClient }) {
-                            ask(c, allow: o == .allow)
-                        }
-                    })
-            }
+            UnifiedListView(
+                rows: rows,
+                supportedOps: [.allow, .deny],
+                onOp: { o, sel in
+                    for c in sel.compactMap({ $0.payload as? LocationClient }) {
+                        ask(c, allow: o == .allow)
+                    }
+                })
             OtherStatus(text: status)
         }
         .otherOpAlert($op, perform: perform)
+        // Same as every other pane: load on appear and on toolbar Refresh.
+        // Loading needs admin auth — if the user cancels, the list just
+        // stays empty with the reason in the status line.
+        .onAppear {
+            if !requested { requested = true; load() }
+        }
+        .onChange(of: model.otherReload) { _, _ in load() }
     }
 
     private func ask(_ c: LocationClient, allow: Bool) {
@@ -445,11 +444,13 @@ struct LocationView: View {
                 let rs = cl.map { Self.row(for: $0) }
                 await MainActor.run {
                     rows = rs
-                    loaded = true
-                    if cl.isEmpty { status = "locationd client stores are empty." }
+                    status = cl.isEmpty ? "locationd client stores are empty." : ""
                 }
             } catch {
-                await MainActor.run { status = "✗ \(error.localizedDescription)" }
+                await MainActor.run {
+                    rows = []
+                    status = "✗ \(error.localizedDescription)"
+                }
             }
         }
     }
