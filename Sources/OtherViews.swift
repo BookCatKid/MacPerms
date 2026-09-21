@@ -137,19 +137,8 @@ struct BTMView: View {
             UnifiedListView(
                 rows: stores.rows[.backgroundItems] ?? [],
                 footerText: "Allowed = user consent · Enabled = launchd state",
-                pageActions: [
-                    .init(label: "Reset ALL background items…", destructive: true) {
-                        stores.showResetBTM = true
-                    }
-                ],
-                supportedOps: [.enable, .disable],
+                supportedOps: [.enable, .disable, .remove],
                 onOp: stores.ask)
-        }
-        .alert("Reset all background items?", isPresented: $stores.showResetBTM) {
-            Button("Reset everything", role: .destructive) { stores.resetAllBTM() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Runs `sfltool resetbtm` as root. This wipes the entire .btm database — every login item and launch agent re-registers on next login/launch, and per-item user approvals are lost.")
         }
     }
 }

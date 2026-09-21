@@ -20,7 +20,6 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
     @Published var neConfigID: String?
     @Published var neRowsByConfig: [String: [PermRow]] = [:]
     @Published var gkStatus = ""
-    @Published var showResetBTM = false
 
     /// TCC records feed the Not Installed sweep — wired in ContentView's .task.
     weak var tcc: TCCViewModel?
@@ -729,22 +728,6 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                 await MainActor.run {
                     self.status[o.pane] = "✗ \(error.localizedDescription)"
                 }
-            }
-        }
-    }
-
-    /// Nuclear BTM reset — behind its own confirmation in the pane view.
-    func resetAllBTM() {
-        Task.detached {
-            do {
-                let out = try OtherStore.resetBTM()
-                await MainActor.run {
-                    self.status[.backgroundItems] = "✓ \(out.isEmpty ? "BTM database reset — apps will re-register on next launch." : out)"
-                    self.load(.backgroundItems)
-                    self.load(.loginItems)
-                }
-            } catch {
-                await MainActor.run { self.status[.backgroundItems] = "✗ \(error.localizedDescription)" }
             }
         }
     }

@@ -104,10 +104,6 @@ enum OtherStore {
         return items
     }
 
-    static func resetBTM() throws -> String {
-        try Elevation.runAsRoot("/usr/bin/sfltool resetbtm")
-    }
-
     /// Delete one BTM record by identifier — drops the ItemRecord's UID from
     /// the .btm archive's record array (same surgery pattern as the NE store)
     /// and SIGKILLs backgroundtaskmanagementd so it re-reads.
