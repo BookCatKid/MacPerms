@@ -3,12 +3,17 @@ import AppKit
 
 enum Resolver {
     private static var cache: [String: ClientIdentity] = [:]
+    private static let cacheLock = NSLock()
 
     /// Resolve a TCC client (bundle id / signing identifier, or absolute path) to a
-    /// display name + icon.
+    /// display name + icon. Thread-safe — LaunchServices lookups are slow, so
+    /// callers should warm this off the main thread where possible.
     static func identity(for client: String, clientType: Int) -> ClientIdentity {
         let key = "\(clientType)|\(client)"
-        if let c = cache[key] { return c }
+        cacheLock.lock()
+        let cached = cache[key]
+        cacheLock.unlock()
+        if let c = cached { return c }
 
         var result: ClientIdentity
         if clientType == 0 {
@@ -44,7 +49,9 @@ enum Resolver {
                                         isPathClient: true)
             }
         }
+        cacheLock.lock()
         cache[key] = result
+        cacheLock.unlock()
         return result
     }
 

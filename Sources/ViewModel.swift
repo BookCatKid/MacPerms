@@ -40,18 +40,34 @@ final class TCCViewModel: ObservableObject {
     }
 
     func refresh() {
-        databases = TCCStore.discoverDatabases()
-        var all: [TCCRecord] = []
-        var errs: [String] = []
-        for db in databases {
-            do { all.append(contentsOf: try TCCStore.readRecords(from: db)) }
-            catch { errs.append("\(db.kind.rawValue) DB: \(error.localizedDescription)") }
+        // DB reads + LaunchServices identity resolution are slow on first run —
+        // do them off the main thread and publish the results.
+        Task.detached { [self] in
+            let dbs = TCCStore.discoverDatabases()
+            var all: [TCCRecord] = []
+            var errs: [String] = []
+            for db in dbs {
+                do { all.append(contentsOf: try TCCStore.readRecords(from: db)) }
+                catch { errs.append("\(db.kind.rawValue) DB: \(error.localizedDescription)") }
+            }
+            // Warm the identity cache so row construction never blocks the UI.
+            for r in all {
+                _ = Resolver.identity(for: r.client, clientType: r.clientType)
+                if r.indirectObject != "UNUSED" {
+                    _ = Resolver.identity(for: r.indirectObject, clientType: 0)
+                }
+            }
+            let records = all
+            let errors = errs
+            await MainActor.run {
+                self.databases = dbs
+                self.records = records
+                self.loadErrors = errors
+                // Only auto-pick a service when nothing is selected — otherwise
+                // refresh would yank the user off an Other-Stores pane.
+                if self.selection == nil { self.selection = records.first.map { .service($0.service) } }
+            }
         }
-        records = all
-        loadErrors = errs
-        // Only auto-pick a service when nothing is selected — otherwise refresh
-        // would yank the user off an Other-Stores pane onto the first service.
-        if selection == nil { selection = all.first.map { .service($0.service) } }
     }
 
     /// Toolbar Refresh — reload TCC records AND signal Other panes to reload.
