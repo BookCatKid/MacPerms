@@ -4,7 +4,8 @@
 //   needt ne-set   <signingID> allow|deny   Local Network decision for an app
 //   needt ne-reset <signingID>              clear explicit decision (reprompt)
 //   needt loc-dump                          dump /var/db/locationd plists as JSON
-//   needt loc-set  <bundleID> allow|deny    Location Services authorization
+//   needt loc-set  <key> allow|deny         Location Services authorization
+//   needt loc-remove <key>                  delete a locationd client record
 //   needt gk <spctl args...>                Gatekeeper ops via /usr/sbin/spctl
 import Foundation
 import SystemConfiguration
@@ -110,6 +111,20 @@ case "loc-set":
     }
     guard changed else { fail("client not found in locationd stores") }
     print("OK")
+
+case "loc-remove":
+    guard args.count == 2 else { fail("args") }
+    var changed = false
+    for name in ["clients.plist", "clients-b.plist"] {
+        let p = "/var/db/locationd/\(name)"
+        guard let dict = NSMutableDictionary(contentsOfFile: p),
+              dict[args[1]] != nil else { continue }
+        dict.removeObject(forKey: args[1])
+        dict.write(toFile: p, atomically: true)
+        changed = true
+    }
+    guard changed else { fail("client not found in locationd stores") }
+    print("OK removed client")
 
 case "gk":
     let proc = Process()

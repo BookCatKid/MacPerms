@@ -134,7 +134,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             statusColor: x.enabled ? .green : .red,
             info: x.version == "(null)" ? "" : x.version,
             detail: x.path,
-            ops: [.enable, .disable],
+            ops: [.enable, .disable, .reset, .remove],
             payload: x)
         row.appKey = x.hostAppPath
             .flatMap { Bundle(url: URL(fileURLWithPath: $0))?.bundleIdentifier } ?? ""
@@ -168,7 +168,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             statusColor: c.authorized ? .green : .red,
             info: "",
             detail: c.bundlePath ?? "",
-            ops: [.allow, .deny],
+            ops: [.allow, .deny, .remove],
             payload: c)
         row.appKey = c.clientID
         return row
@@ -361,17 +361,40 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
         }
 
         if let xs = nonEmpty(sel.compactMap { $0.payload as? AppExtension }) {
-            guard o == .enable || o == .disable else { return }
-            let enable = o == .enable
-            op = OtherOp(
-                title: "\(enable ? "Enable" : "Disable") \(xs.count) extension(s)?",
-                message: "\(names)\n\nRuns `pluginkit -e \(enable ? "use" : "ignore") -i <id>` in the console user's pkd domain. The list is re-read after writing.",
-                destructive: !enable) {
-                    try xs.map {
-                        let out = try OtherStore.extSetEnabled(extID: $0.extID, enabled: enable)
-                        return "\($0.extID): \(out.isEmpty ? "OK" : out)"
-                    }.joined(separator: "\n")
-                }
+            switch o {
+            case .enable, .disable:
+                let enable = o == .enable
+                op = OtherOp(
+                    title: "\(enable ? "Enable" : "Disable") \(xs.count) extension(s)?",
+                    message: "\(names)\n\nRuns `pluginkit -e \(enable ? "use" : "ignore") -i <id>` in the console user's pkd domain. The list is re-read after writing.",
+                    destructive: !enable) {
+                        try xs.map {
+                            let out = try OtherStore.extSetEnabled(extID: $0.extID, enabled: enable)
+                            return "\($0.extID): \(out.isEmpty ? "OK" : out)"
+                        }.joined(separator: "\n")
+                    }
+            case .reset:
+                op = OtherOp(
+                    title: "Reset election for \(xs.count) extension(s)?",
+                    message: "\(names)\n\nRuns `pluginkit -e default -i <id>` — forgets your use/ignore choice so the extension returns to pkd's default election.",
+                    destructive: true) {
+                        try xs.map {
+                            let out = try OtherStore.extResetElection(extID: $0.extID)
+                            return "\($0.extID): \(out.isEmpty ? "OK" : out)"
+                        }.joined(separator: "\n")
+                    }
+            case .remove:
+                op = OtherOp(
+                    title: "Unregister \(xs.count) extension(s)?",
+                    message: "\(names)\n\nRuns `pluginkit -r <path>` — removes the extension from pkd's registry. It re-registers on next host-app launch or pkd rescan.",
+                    destructive: true) {
+                        try xs.map {
+                            let out = try OtherStore.extUnregister(path: $0.path)
+                            return "\($0.extID): \(out.isEmpty ? "removed" : out)"
+                        }.joined(separator: "\n")
+                    }
+            default: break
+            }
             return
         }
 
@@ -396,14 +419,24 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
         }
 
         if let cl = nonEmpty(sel.compactMap { $0.payload as? LocationClient }) {
-            guard o == .allow || o == .deny else { return }
-            let allow = o == .allow
-            op = OtherOp(
-                title: "\(allow ? "Allow" : "Deny") Location Services for \(cl.count) client(s)?",
-                message: "\(names)\n\nWrites Authorized=\(allow) to the locationd clients store as root. UNVERIFIED write path — locationd may ignore it until restarted. Relaunch the app to test.",
-                destructive: !allow) {
-                    try cl.map { try OtherStore.locSet(key: $0.key, allow: allow) }.joined(separator: "\n")
-                }
+            switch o {
+            case .allow, .deny:
+                let allow = o == .allow
+                op = OtherOp(
+                    title: "\(allow ? "Allow" : "Deny") Location Services for \(cl.count) client(s)?",
+                    message: "\(names)\n\nWrites Authorized=\(allow) to the locationd clients store as root. UNVERIFIED write path — locationd may ignore it until restarted. Relaunch the app to test.",
+                    destructive: !allow) {
+                        try cl.map { try OtherStore.locSet(key: $0.key, allow: allow) }.joined(separator: "\n")
+                    }
+            case .remove:
+                op = OtherOp(
+                    title: "Remove \(cl.count) Location Services record(s)?",
+                    message: "\(names)\n\nDeletes the client entry from the locationd stores entirely — the app re-prompts next time it requests location.",
+                    destructive: true) {
+                        try cl.map { try OtherStore.locRemove(key: $0.key) }.joined(separator: "\n")
+                    }
+            default: break
+            }
             return
         }
 

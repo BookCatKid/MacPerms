@@ -160,7 +160,7 @@ struct AppExtensionsView: View {
         OtherPaneShell(pane: .appExtensions) {
             UnifiedListView(
                 rows: stores.rows[.appExtensions] ?? [],
-                supportedOps: [.enable, .disable],
+                supportedOps: [.enable, .disable, .reset, .remove],
                 onOp: stores.ask)
         }
     }
@@ -191,7 +191,7 @@ struct LocationView: View {
         OtherPaneShell(pane: .location) {
             UnifiedListView(
                 rows: stores.rows[.location] ?? [],
-                supportedOps: [.allow, .deny],
+                supportedOps: [.allow, .deny, .remove],
                 onOp: stores.ask)
         }
     }

@@ -338,6 +338,12 @@ enum OtherStore {
         try needt(["loc-set", key, allow ? "allow" : "deny"])
     }
 
+    /// Delete the client record entirely — the app re-prompts next time it
+    /// requests location.
+    static func locRemove(key: String) throws -> String {
+        try needt(["loc-remove", key])
+    }
+
     // MARK: App Extensions — pkd via pluginkit (per-user domain)
 
     /// `pluginkit -m -v` line: "<status>   <ext-id>(<version>)\t<uuid>\t<date>\t<path>"
@@ -370,6 +376,20 @@ enum OtherStore {
     static func extSetEnabled(extID: String, enabled: Bool) throws -> String {
         let mode = enabled ? "use" : "ignore"
         return runAsConsoleUser("/usr/bin/pluginkit", ["-e", mode, "-i", extID])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// `pluginkit -e default -i <ext-id>` — forget the user's use/ignore
+    /// election entirely (back to pkd's default).
+    static func extResetElection(extID: String) throws -> String {
+        return runAsConsoleUser("/usr/bin/pluginkit", ["-e", "default", "-i", extID])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// `pluginkit -r <path>` — unregister the extension from pkd's registry;
+    /// it re-registers on next host-app launch or pkd rescan.
+    static func extUnregister(path: String) throws -> String {
+        return runAsConsoleUser("/usr/bin/pluginkit", ["-r", path])
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
