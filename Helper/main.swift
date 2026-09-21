@@ -7,6 +7,7 @@
 //   needt loc-set  <key> allow|deny         Location Services authorization
 //   needt loc-remove <key>                  delete a locationd client record
 //   needt btm-remove <identifier>           delete a BTM ItemRecord (.btm surgery)
+//   needt btm-set <identifier> 0|1          flip the record's enabled disposition bit
 //   needt gk <spctl args...>                Gatekeeper ops via /usr/sbin/spctl
 import Foundation
 import SystemConfiguration
@@ -199,6 +200,47 @@ case "btm-remove":
     }
     sigkill("backgroundtaskmanagementd")
     print(removed == 0 ? "OK already absent" : "OK removed \(removed) record(s)")
+
+case "btm-set":
+    // Set or clear the 'enabled' bit (0x1) of a BTM ItemRecord's disposition —
+    // the same bit System Settings' per-item toggle writes. Same store surgery
+    // as btm-remove: SIGKILL the daemon on both sides so it can't flush a
+    // stale in-memory copy over the edit.
+    guard args.count == 3, let en = Int(args[2]), en == 0 || en == 1
+    else { fail("args") }
+    let target = args[1]
+    var touched = 0
+    sigkill("backgroundtaskmanagementd")
+    let dir = "/var/db/com.apple.backgroundtaskmanagement"
+    for f in (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
+             where f.hasSuffix(".btm") {
+        let p = "\(dir)/\(f)"
+        guard let data = FileManager.default.contents(atPath: p),
+              let plist = try? PropertyListSerialization.propertyList(
+                  from: data, options: [.mutableContainers], format: nil)
+                      as? NSMutableDictionary,
+              let objects = plist["$objects"] as? NSMutableArray else { continue }
+        var changed = false
+        for i in 0..<objects.count {
+            guard let rec = objects[i] as? NSMutableDictionary,
+                  let iuid = NEPlist.uidIndex(rec["identifier"]), iuid < objects.count,
+                  (objects[iuid] as? String) == target,
+                  let disp = rec["disposition"] as? Int,
+                  en == 1 ? (disp & 1) == 0 : (disp & 1) != 0 else { continue }
+            rec["disposition"] = en == 1 ? disp | 1 : disp & ~1
+            if let g = rec["generation"] as? Int { rec["generation"] = g + 1 }
+            rec["modificationDate"] = Date().timeIntervalSinceReferenceDate
+            touched += 1
+            changed = true
+        }
+        if changed {
+            let out = try PropertyListSerialization.data(
+                fromPropertyList: plist, format: .binary, options: 0)
+            try out.write(to: URL(fileURLWithPath: p))
+        }
+    }
+    sigkill("backgroundtaskmanagementd")
+    print(touched == 0 ? "OK no change" : "OK updated \(touched) record(s)")
 
 case "gk":
     let proc = Process()

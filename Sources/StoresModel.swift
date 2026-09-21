@@ -113,13 +113,14 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             of: #"\s*\(0x[0-9a-fA-F]+\)"#, with: "", options: .regularExpression)
         let launchdState = launchd[i.launchdDomain]?[i.launchdLabel]
         let enabled = launchdState ?? i.enabled
-        // launchctl can disable any service label — the entry is created
-        // on first write; grouping records (developer/app) are not services.
+        // Enable/Disable flips the record's disposition enabled bit — the
+        // same write the Settings toggle makes — so it applies to every
+        // record type (app groupings, dock tiles, tasks), not just launchd
+        // services. Service records additionally sync the launchd override.
         // Every record is removable: needt btm-remove drops the ItemRecord
         // from the .btm archive (enabled `app` records also lose their
         // System Events 'Open at Login' entry).
-        var ops: Set<RowOp> = [.remove]
-        if i.isServiceType { ops.formUnion([.enable, .disable]) }
+        let ops: Set<RowOp> = [.remove, .enable, .disable]
         var row = PermRow(
             id: i.id, icon: id.icon, title: i.name, subtitle: i.identifier,
             service: type,
@@ -573,18 +574,21 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             switch o {
             case .enable, .disable:
                 let enable = o == .enable
-                let svc = items.filter { $0.isServiceType }
-                if !svc.isEmpty {
-                    parts.append(OtherOp(
-                        title: "\(enable ? "Enable" : "Disable") \(svc.count) item(s)?",
-                        message: "\(names)\n\nRuns `launchctl \(enable ? "enable" : "disable") <domain>/<label>` for each item — the same per-service switch Settings toggles. State is re-read from print-disabled after writing.",
-                        destructive: !enable) {
-                            Self.each(svc, \.launchdLabel) {
-                                try OtherStore.launchctlSetEnabled(
-                                    domain: $0.launchdDomain, label: $0.launchdLabel, enabled: enable)
+                parts.append(OtherOp(
+                    title: "\(enable ? "Enable" : "Disable") \(items.count) background item(s)?",
+                    message: "\(names)\n\nFlips the enabled bit of each record's BTM disposition — the same write the System Settings toggle performs — then kills backgroundtaskmanagementd so it re-reads. Launchd-backed items also sync the launchd enable/disable override.",
+                    destructive: !enable) {
+                        Self.each(items, \.identifier) {
+                            var msgs = [try OtherStore.btmSetEnabled(
+                                identifier: $0.identifier, enabled: enable)]
+                            if $0.isServiceType {
+                                msgs.append(try OtherStore.launchctlSetEnabled(
+                                    domain: $0.launchdDomain, label: $0.launchdLabel,
+                                    enabled: enable))
                             }
-                        })
-                }
+                            return msgs.joined(separator: "; ")
+                        }
+                    })
             case .remove:
                 parts.append(OtherOp(
                     title: "Remove \(items.count) background item record(s)?",

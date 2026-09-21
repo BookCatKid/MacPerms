@@ -111,6 +111,12 @@ enum OtherStore {
         try needt(["btm-remove", identifier])
     }
 
+    /// Set a BTM record's enabled disposition bit — the same write System
+    /// Settings' per-item toggle performs (archive surgery in needt).
+    static func btmSetEnabled(identifier: String, enabled: Bool) throws -> String {
+        try needt(["btm-set", identifier, enabled ? "1" : "0"])
+    }
+
     // MARK: launchd disabled registry — the real per-item on/off switch
 
     /// `launchctl print-disabled <domain>` → label → enabled.
