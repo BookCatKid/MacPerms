@@ -296,6 +296,17 @@ struct ContentView: View {
             Text(restartTarget?.note ?? "")
         }
         .onChange(of: model.otherReload) { _, _ in stores.loadAll() }
+        .onChange(of: model.selection) { _, sel in
+            // Store data is a snapshot — re-read on every visit so edits made
+            // in System Settings (or elsewhere) show up without Refresh.
+            if case .other(let pane) = sel { stores.load(pane) }
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in
+            // Re-read when coming back from e.g. System Settings.
+            model.refresh()
+            if let pane = model.selectedOther { stores.load(pane) }
+        }
     }
 
     // MARK: Sidebars

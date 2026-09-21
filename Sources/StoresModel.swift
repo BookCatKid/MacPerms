@@ -111,8 +111,11 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
         }
         let type = i.type.replacingOccurrences(
             of: #"\s*\(0x[0-9a-fA-F]+\)"#, with: "", options: .regularExpression)
+        // Effective state: BOTH gates must allow the item — the launchd
+        // override (when one exists) and the BTM disposition bit. An
+        // override reading 'enabled' must not mask a disabled disposition.
         let launchdState = launchd[i.launchdDomain]?[i.launchdLabel]
-        let enabled = launchdState ?? i.enabled
+        let enabled = (launchdState ?? true) && i.enabled
         // Enable/Disable flips the record's disposition enabled bit — the
         // same write the Settings toggle makes — so it applies to every
         // record type (app groupings, dock tiles, tasks), not just launchd
