@@ -15,6 +15,7 @@ struct OtherView: View {
         case .gatekeeper: GatekeeperView()
         case .location: LocationView()
         case .notifications: NotificationsView()
+        case .uninstalled: OrphanView()
         }
     }
 }
@@ -210,6 +211,22 @@ struct NotificationsView: View {
                 rows: stores.rows[.notifications] ?? [],
                 footerText: "Reset removes the entry — the app re-prompts on next launch",
                 supportedOps: [.allow, .deny, .reset],
+                onOp: stores.ask)
+        }
+    }
+}
+
+// MARK: - Not Installed (orphan sweep — shown via toolbar sheet, not sidebar)
+
+struct OrphanView: View {
+    @EnvironmentObject var stores: OtherStoresModel
+
+    var body: some View {
+        OtherPaneShell(pane: .uninstalled) {
+            UnifiedListView(
+                rows: stores.rows[.uninstalled] ?? [],
+                footerText: "records whose apps are no longer installed — read-only rows have no safe removal path",
+                supportedOps: [.reset, .remove],
                 onOp: stores.ask)
         }
     }

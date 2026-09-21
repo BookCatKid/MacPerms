@@ -22,6 +22,9 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
     @Published var gkStatus = ""
     @Published var showResetBTM = false
 
+    /// TCC records feed the Not Installed sweep — wired in ContentView's .task.
+    weak var tcc: TCCViewModel?
+
     var neDefaultRule: NEPlist.Rule? {
         let cfg = neConfigs.first { $0.uuid == neConfigID } ?? neConfigs.first
         return cfg?.rules.first { $0.isDefault }
@@ -44,6 +47,10 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
 
     func load(_ pane: OtherPane) {
         state[pane] = .loading
+        // Snapshotted on the main actor — the orphan sweep reads other panes'
+        // rows plus TCC records, which must be captured before detaching.
+        let snapshot = rows
+        let tccRecs = tcc?.records ?? []
         Task.detached {
             do {
                 switch pane {
@@ -54,6 +61,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                 case .gatekeeper:       try await self.finishGatekeeper()
                 case .location:         try await self.finishLocation()
                 case .notifications:    try await self.finishNotifications()
+                case .uninstalled:      try await self.finishOrphans(rows: snapshot, tcc: tccRecs)
                 }
                 await MainActor.run { self.state[pane] = .done }
             } catch {
@@ -62,6 +70,11 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                     self.status[pane] = "✗ \(error.localizedDescription)"
                     self.rows[pane] = self.rows[pane] ?? []
                 }
+            }
+            // Any pane refresh can create or clear orphans — rebuild the
+            // sweep list once this pane's new rows are published.
+            await MainActor.run {
+                if pane != .uninstalled { self.load(.uninstalled) }
             }
         }
     }
@@ -299,6 +312,125 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
         }
     }
 
+    // MARK: - Not Installed sweep
+
+    /// A row is orphaned when nothing it points at still exists: every known
+    /// filesystem path is gone AND the bundle id no longer resolves through
+    /// LaunchServices. Bundle-id-only records are conservative — an
+    /// unresolvable com.apple.* id is a system record, not an orphan.
+    nonisolated static func isOrphan(_ r: PermRow) -> Bool {
+        let fm = FileManager.default
+        func exists(_ p: String?) -> Bool {
+            guard let p, !p.isEmpty else { return false }
+            if p.hasPrefix("file://"), let u = URL(string: p) {
+                return fm.fileExists(atPath: u.path)
+            }
+            return fm.fileExists(atPath: p)
+        }
+        func resolves(_ bid: String?) -> Bool {
+            guard let bid, !bid.isEmpty, !bid.hasPrefix("/") else { return false }
+            return Resolver.identity(for: bid, clientType: 0).appURL != nil
+        }
+        func systemID(_ bid: String) -> Bool {
+            bid.hasPrefix("com.apple.") || bid.hasPrefix("com.microsoft.")
+        }
+        switch r.payload {
+        case let t as TCCRecord:
+            if t.clientType == 1 || t.client.hasPrefix("/") { return !exists(t.client) }
+            return !systemID(t.client) && !resolves(t.client)
+        case let x as NEPlist.Rule:
+            return !exists(x.path) && !systemID(x.signingID) && !resolves(x.signingID)
+        case let i as BTMItem:
+            guard i.executable != nil || i.url != nil || i.bundleID != nil else { return false }
+            if exists(i.executable) || exists(i.url) { return false }
+            guard let bid = i.bundleID else { return true }
+            return !systemID(bid) && !resolves(bid)
+        case let x as AppExtension:
+            return !exists(x.path) && !exists(x.hostAppPath)
+        case let c as LocationClient:
+            if exists(c.bundlePath) { return false }
+            return c.isPathClient ? !exists(c.clientID)
+                                  : !systemID(c.clientID) && !resolves(c.clientID)
+        case let n as NotificationApp:
+            if exists(n.path) { return false }
+            let bid = n.bundleID.hasPrefix("_SYSTEM_CENTER_:")
+                ? String(n.bundleID.dropFirst("_SYSTEM_CENTER_:".count)) : n.bundleID
+            return !systemID(bid) && !resolves(bid)
+        default:
+            return false   // Gatekeeper rules and anything not app-bound
+        }
+    }
+
+    /// TCC record → PermRow (shared with ContentView's by-service/by-app lists).
+    nonisolated static func tccRow(_ rec: TCCRecord) -> PermRow {
+        let id = Resolver.identity(for: rec.client, clientType: rec.clientType)
+        var service = ServiceCatalog.info(for: rec.service).displayName
+        if rec.indirectObject != "UNUSED" {
+            service += " → " + Resolver.identity(for: rec.indirectObject, clientType: 0).name
+        }
+        var row = PermRow(
+            id: rec.id,
+            icon: id.icon,
+            title: id.name,
+            subtitle: rec.client,
+            service: service,
+            status: rec.statusName,
+            statusColor: rec.statusColor,
+            info: rec.managed ? "Managed (MDM)" : rec.reasonName,
+            detail: "\(rec.db.kind.rawValue) DB · \(rec.lastModified.formatted(date: .abbreviated, time: .omitted))",
+            ops: rec.managed ? [] : [.allow, .deny, .reset],
+            payload: rec)
+        row.appKey = rec.client
+        row.extraCopy = {
+            guard let blob = rec.csreq, let text = Resolver.csreqText(blob)
+            else { return nil }
+            return ("Copy Code Requirement", text)
+        }
+        return row
+    }
+
+    /// Collect orphan rows from every loaded store + TCC. Service column is
+    /// prefixed with the source store since the sweep list mixes everything.
+    nonisolated private func finishOrphans(rows snapshot: [OtherPane: [PermRow]],
+                                           tcc tccRecs: [TCCRecord]) async throws {
+        var out: [PermRow] = []
+        for (pane, rs) in snapshot where pane != .uninstalled && pane != .gatekeeper {
+            for var r in rs where Self.isOrphan(r) {
+                r.service = "\(pane.rawValue) · \(r.service)"
+                r.ops.formIntersection([.reset, .remove])
+                r.pane = .uninstalled
+                out.append(r)
+            }
+        }
+        for rec in tccRecs where !rec.managed {
+            var r = Self.tccRow(rec)
+            guard Self.isOrphan(r) else { continue }
+            r.service = "TCC · \(r.service)"
+            r.ops = [.reset]
+            r.pane = .uninstalled
+            out.append(r)
+        }
+        let result = out
+        await MainActor.run { self.rows[.uninstalled] = result }
+    }
+
+    /// Verified TCC record deletion for the orphan sweep — same SQL path the
+    /// confirmation sheet uses, minus the pending-list UI.
+    nonisolated static func tccDelete(_ rec: TCCRecord) throws -> String {
+        let sql = TCCStore.deleteSQL(service: rec.service, client: rec.client,
+                                     clientType: rec.clientType,
+                                     indirectObject: rec.indirectObject)
+        if rec.db.kind == .system {
+            try Elevation.systemWrite(sql: sql, restartTCCD: false)
+        } else {
+            try TCCStore.apply(sql: sql, to: rec.db)
+        }
+        let v = try TCCStore.verify(service: rec.service, client: rec.client,
+                                    clientType: rec.clientType,
+                                    indirectObject: rec.indirectObject, in: rec.db)
+        return v == nil ? "deleted" : "still present"
+    }
+
     // MARK: - Ops (always via OtherOp confirmation)
 
     /// Run a mutation per item: dedupes on the key (multiple rows can share
@@ -319,6 +451,19 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
         defer { op?.pane = sel.first?.pane ?? .localNetwork }
         let names = sel.prefix(4).map(\.title).joined(separator: ", ")
             + (sel.count > 4 ? " +\(sel.count - 4) more" : "")
+
+        if let rs = nonEmpty(sel.compactMap { $0.payload as? TCCRecord }) {
+            guard o == .reset else { return }
+            op = OtherOp(
+                title: "Delete \(rs.count) TCC record(s)?",
+                message: "\(names)\n\nDeletes the TCC records from their databases — each delete is verified by read-back.",
+                destructive: true) {
+                    let out = Self.each(rs, \.id) { try Self.tccDelete($0) }
+                    Elevation.restartUserTCCD()
+                    return out
+                }
+            return
+        }
 
         if let rs = nonEmpty(sel.compactMap { $0.payload as? NEPlist.Rule }) {
             switch o {
@@ -503,6 +648,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                 let out = try o.run()
                 await MainActor.run {
                     self.status[o.pane] = "✓ \(out)"
+                    self.tcc?.refresh()   // TCC deletes must re-read the DBs too
                     for pane in OtherPane.allCases { self.load(pane) }
                 }
             } catch {

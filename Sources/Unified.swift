@@ -8,12 +8,12 @@ struct PermRow: Identifiable {
     let icon: NSImage
     let title: String          // display name
     let subtitle: String       // identifier
-    let service: String        // TCC service / item type / rule type
+    var service: String        // TCC service / item type / rule type
     let status: String         // pill text
     let statusColor: Color
     let info: String           // provenance / explicit / enabled / label
     let detail: String         // path / db+date / requirement / executable
-    let ops: Set<RowOp>        // actions valid for THIS row (empty = read-only)
+    var ops: Set<RowOp>        // actions valid for THIS row (empty = read-only)
     let payload: Any           // underlying record for op handlers
     /// Normalized application identity (bundle id or path) — used to merge
     /// every store's rows into the By App view. Empty = not attributable

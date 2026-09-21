@@ -8,6 +8,9 @@ enum OtherPane: String, CaseIterable, Identifiable, Hashable {
     case gatekeeper = "Gatekeeper"
     case location = "Location Services"
     case notifications = "Notifications"
+    /// Orphan sweep — permission records whose apps are no longer installed.
+    /// Not a real store: hidden from the sidebar, shown via the toolbar sheet.
+    case uninstalled = "Not Installed"
     var id: String { rawValue }
     var symbol: String {
         switch self {
@@ -18,6 +21,7 @@ enum OtherPane: String, CaseIterable, Identifiable, Hashable {
         case .gatekeeper: return "checkmark.shield"
         case .location: return "location"
         case .notifications: return "bell"
+        case .uninstalled: return "app.dashed"
         }
     }
     var helpText: String {
@@ -36,6 +40,8 @@ enum OtherPane: String, CaseIterable, Identifiable, Hashable {
             return "Per-app Location Services authorization is locationd's own store (clients plists under /var/db/locationd), not TCC — reading it requires root.\n\nClient keys are composite (<userUUID>:<bundleID>: or <userUUID>:e<path>:); the real identity comes from each entry's BundleId/BundlePath/Executable.\n\nToggling writes the `Authorized` flag directly — an UNVERIFIED write path on macOS 27: locationd may ignore it until restarted. Relaunch the app to test."
         case .notifications:
             return "Per-app notification authorization, managed by usernoted and stored in the usernoted group-container preferences plist.\n\nThe 'allow notifications' switch is bit 25 of each app's flags value; style (banners/alerts), badges, sounds and lock-screen display live in other bits. Reset removes the app's entry entirely — it re-registers and re-prompts on next launch.\n\nWrites edit the plist directly and restart usernoted so it re-reads."
+        case .uninstalled:
+            return "Permission records across every store whose apps are no longer installed — the executable path is missing and the bundle id no longer resolves.\n\nRows are delete-only: Remove/Reset delete the underlying record through each store's normal path. Rows with no safe removal mechanism are read-only."
         }
     }
 }

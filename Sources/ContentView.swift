@@ -5,6 +5,7 @@ struct ContentView: View {
     @EnvironmentObject var model: TCCViewModel
     @EnvironmentObject var stores: OtherStoresModel
     @State private var showHelp = false
+    @State private var showOrphans = false
     @State private var sidebarSearch = ""
     @State private var restartTarget: RestartableService?
 
@@ -52,32 +53,7 @@ struct ContentView: View {
 
     /// TCC records mapped into the unified row model.
     private var tccRows: [PermRow] {
-        visibleRecords.map { rec in
-            let id = Resolver.identity(for: rec.client, clientType: rec.clientType)
-            var service = ServiceCatalog.info(for: rec.service).displayName
-            if rec.indirectObject != "UNUSED" {
-                service += " → " + Resolver.identity(for: rec.indirectObject, clientType: 0).name
-            }
-            var row = PermRow(
-                id: rec.id,
-                icon: id.icon,
-                title: id.name,
-                subtitle: rec.client,
-                service: service,
-                status: rec.statusName,
-                statusColor: rec.statusColor,
-                info: rec.managed ? "Managed (MDM)" : rec.reasonName,
-                detail: "\(rec.db.kind.rawValue) DB · \(rec.lastModified.formatted(date: .abbreviated, time: .omitted))",
-                ops: rec.managed ? [] : [.allow, .deny, .reset],
-                payload: rec)
-            row.appKey = rec.client
-            row.extraCopy = {
-                guard let blob = rec.csreq, let text = Resolver.csreqText(blob)
-                else { return nil }
-                return ("Copy Code Requirement", text)
-            }
-            return row
-        }
+        visibleRecords.map(OtherStoresModel.tccRow)
     }
 
     /// Rows for the detail pane — by-service/by-app TCC records, plus every
@@ -117,7 +93,12 @@ struct ContentView: View {
         }
         .task {
             model.refresh()
+            stores.tcc = model
             stores.loadAll()
+        }
+        .onChange(of: model.records) { _, _ in
+            // TCC reloads independently — rebuilt orphans pick up fresh records.
+            stores.load(.uninstalled)
         }
     }
 
@@ -226,6 +207,10 @@ struct ContentView: View {
                         .frame(width: 360)
                         .textSelection(.enabled)
                 }
+                Button { showOrphans = true } label: {
+                    Label("Not Installed", systemImage: "app.dashed")
+                }
+                .help("Permission records for apps that are no longer installed")
                 Button { model.showGrantSheet = true } label: {
                     Label("Grant to App…", systemImage: "plus")
                 }
@@ -281,6 +266,17 @@ struct ContentView: View {
             ConfirmSheet()
         }
         .sheet(isPresented: $model.showGrantSheet) { GrantSheet() }
+        .sheet(isPresented: $showOrphans) {
+            NavigationStack {
+                OrphanView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showOrphans = false }
+                        }
+                    }
+            }
+            .frame(minWidth: 940, minHeight: 560)
+        }
         .alert(restartTarget.map { "Restart \($0.label)?" } ?? "", isPresented: Binding(
             get: { restartTarget != nil }, set: { if !$0 { restartTarget = nil } })) {
             Button("Restart", role: .destructive) {
@@ -307,9 +303,11 @@ struct ContentView: View {
     /// Sidebar search — filters services/apps and the Other Stores list.
     private var otherPanesShown: [OtherPane] {
         let q = sidebarSearch.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return Array(OtherPane.allCases) }
+        guard !q.isEmpty else {
+            return OtherPane.allCases.filter { $0 != .uninstalled }
+        }
         return OtherPane.allCases.filter {
-            $0.rawValue.localizedCaseInsensitiveContains(q)
+            $0 != .uninstalled && $0.rawValue.localizedCaseInsensitiveContains(q)
         }
     }
 
