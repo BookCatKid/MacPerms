@@ -5,6 +5,7 @@ struct ContentView: View {
     @EnvironmentObject var model: TCCViewModel
     @State private var showRestartConfirm = false
     @State private var showHelp = false
+    @State private var sidebarSearch = ""
 
     private var visibleRecords: [TCCRecord] {
         switch model.mode {
@@ -56,12 +57,21 @@ struct ContentView: View {
                 .pickerStyle(.segmented)
                 .padding(8)
 
+                HStack(spacing: 5) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Search", text: $sidebarSearch)
+                        .textFieldStyle(.plain)
+                }
+                .padding(6)
+                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                .padding(.horizontal, 8).padding(.bottom, 6)
+
                 List(selection: $model.selection) {
                     Section("TCC") {
                         if model.mode == .byService { serviceRows } else { appRows }
                     }
                     Section("Other Stores") {
-                        ForEach(OtherPane.allCases) { pane in
+                        ForEach(otherPanesShown) { pane in
                             Label {
                                 HStack {
                                     Text(pane.rawValue)
@@ -184,9 +194,23 @@ struct ContentView: View {
 
     // MARK: Sidebars
 
+    /// Sidebar search — filters services/apps and the Other Stores list.
+    private var otherPanesShown: [OtherPane] {
+        let q = sidebarSearch.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return Array(OtherPane.allCases) }
+        return OtherPane.allCases.filter {
+            $0.rawValue.localizedCaseInsensitiveContains(q)
+        }
+    }
+
     @ViewBuilder
     private var serviceRows: some View {
-        let grouped = Dictionary(grouping: model.servicesPresent) {
+        let q = sidebarSearch.trimmingCharacters(in: .whitespaces).lowercased()
+        let grouped = Dictionary(grouping: model.servicesPresent.filter {
+            q.isEmpty
+                || ServiceCatalog.info(for: $0).displayName.lowercased().contains(q)
+                || $0.lowercased().contains(q)
+        }) {
             ServiceCatalog.info(for: $0).category
         }
         ForEach(grouped.keys.sorted(), id: \.self) { cat in
@@ -210,7 +234,15 @@ struct ContentView: View {
 
     @ViewBuilder
     private var appRows: some View {
-        ForEach(model.clientsPresent, id: \.self) { key in
+        let q = sidebarSearch.trimmingCharacters(in: .whitespaces).lowercased()
+        ForEach(model.clientsPresent.filter { key in
+            guard !q.isEmpty else { return true }
+            let parts = key.split(separator: "|", maxSplits: 1)
+            let client = String(parts.last ?? "")
+            let type = Int(parts.first ?? "0") ?? 0
+            return client.lowercased().contains(q)
+                || Resolver.identity(for: client, clientType: type).name.lowercased().contains(q)
+        }, id: \.self) { key in
             let parts = key.split(separator: "|", maxSplits: 1)
             let client = String(parts.last ?? "")
             let type = Int(parts.first ?? "0") ?? 0

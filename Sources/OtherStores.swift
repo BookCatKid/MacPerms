@@ -63,7 +63,8 @@ enum OtherStore {
                 url: nilIfNull(cur["URL"]),
                 bundleID: nilIfNull(cur["Bundle Identifier"]),
                 parent: nilIfNull(cur["Parent Identifier"]),
-                lastUse: nilIfNull(cur["Last Use"])))
+                lastUse: nilIfNull(cur["Last Use"]),
+                executable: nilIfNull(cur["Executable Path"])))
             cur = [:]
         }
 
@@ -87,6 +88,50 @@ enum OtherStore {
 
     static func resetBTM() throws -> String {
         try Elevation.runAsRoot("/usr/bin/sfltool resetbtm")
+    }
+
+    // MARK: launchd disabled registry — the real per-item on/off switch
+
+    /// `launchctl print-disabled <domain>` → label → enabled.
+    /// Daemons live in `system`, agents/login items in `gui/<uid>`.
+    static func launchdDisabled(_ domain: String) -> [String: Bool] {
+        let out = Resolver.run("/bin/launchctl", ["print-disabled", domain])
+        var map: [String: Bool] = [:]
+        for line in out.components(separatedBy: "\n") {
+            // lines look like: "com.foo.bar" => enabled
+            guard let q1 = line.range(of: "\""),
+                  let q2 = line[q1.upperBound...].range(of: "\""),
+                  let arrow = line.range(of: "=>") else { continue }
+            let label = String(line[q1.upperBound..<q2.lowerBound])
+            let val = line[arrow.upperBound...].trimmingCharacters(in: .whitespaces)
+            map[label] = (val == "enabled")
+        }
+        return map
+    }
+
+    /// `launchctl enable|disable <domain>/<label>` — root, or via admin prompt
+    /// when the app runs unprivileged.
+    static func launchctlSetEnabled(domain: String, label: String, enabled: Bool) throws -> String {
+        try Elevation.runAsRoot(
+            "/bin/launchctl \(enabled ? "enable" : "disable") \(domain)/\(Elevation.shellQuote(label))")
+    }
+
+    // MARK: Console-user helpers (per-user daemons when running as root)
+
+    /// UID of the user at the console (owner of /dev/console).
+    static func consoleUID() -> Int {
+        let out = Resolver.run("/usr/bin/stat", ["-f", "%u", "/dev/console"])
+        return Int(out.trimmingCharacters(in: .whitespacesAndNewlines)) ?? Int(getuid())
+    }
+
+    /// Run a command inside the console user's context (for per-user daemons
+    /// like pkd when the app itself is root).
+    static func runAsConsoleUser(_ path: String, _ arguments: [String]) -> String {
+        if geteuid() == 0 {
+            return Resolver.run("/bin/launchctl",
+                ["asuser", "\(consoleUID())", path] + arguments)
+        }
+        return Resolver.run(path, arguments)
     }
 
     // MARK: Gatekeeper — spctl (read unprivileged, writes via needt)
@@ -146,18 +191,65 @@ enum OtherStore {
         var out: [LocationClient] = []
         for (file, obj) in root where file.hasPrefix("clients") {
             guard let dict = obj as? [String: Any] else { continue }
-            for (bundleID, entry) in dict {
+            for (key, entry) in dict {
                 guard let e = entry as? [String: Any] else { continue }
+                // Key: "<userUUID>:<id>:" — path clients carry an 'e' prefix.
+                var rest = key
+                if let colon = rest.firstIndex(of: ":") {
+                    rest = String(rest[rest.index(after: colon)...])
+                }
+                let isPath = rest.hasPrefix("e/")
+                if isPath { rest.removeFirst() }
+                if rest.hasSuffix(":") { rest.removeLast() }
+                let clientID = e["BundleId"] as? String
+                    ?? (rest.isEmpty ? key : rest)
                 out.append(LocationClient(
-                    bundleID: bundleID,
-                    authorized: (e["Authorized"] as? Bool) ?? false,
-                    executable: e["Executable"] as? String))
+                    key: key,
+                    clientID: clientID,
+                    isPathClient: isPath,
+                    bundlePath: e["BundlePath"] as? String ?? e["Executable"] as? String,
+                    authorized: (e["Authorized"] as? Bool) ?? false))
             }
         }
-        return out.sorted { $0.bundleID < $1.bundleID }
+        return out.sorted { $0.clientID < $1.clientID }
     }
 
-    static func locSet(bundleID: String, allow: Bool) throws -> String {
-        try needt(["loc-set", bundleID, allow ? "allow" : "deny"])
+    static func locSet(key: String, allow: Bool) throws -> String {
+        try needt(["loc-set", key, allow ? "allow" : "deny"])
+    }
+
+    // MARK: App Extensions — pkd via pluginkit (per-user domain)
+
+    /// `pluginkit -m -v` line: "<status>   <ext-id>(<version>)\t<uuid>\t<date>\t<path>"
+    /// Status '-' = ignored (disabled); blank/'+' = enabled.
+    static func appExtensions() throws -> [AppExtension] {
+        let out = runAsConsoleUser("/usr/bin/pluginkit", ["-m", "-v"])
+        var exts: [AppExtension] = []
+        for line in out.components(separatedBy: "\n") {
+            let fields = line.components(separatedBy: "\t")
+            guard fields.count >= 4 else { continue }
+            let head = fields[0]
+            guard let open = head.range(of: "(", options: .backwards),
+                  head.hasSuffix(")") else { continue }
+            let idPart = head[..<open.lowerBound]
+            let disabled = idPart.hasPrefix("-")
+            let extID = idPart.trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "+-"))
+                .trimmingCharacters(in: .whitespaces)
+            let version = String(head[open.upperBound...].dropLast())
+            exts.append(AppExtension(
+                extID: extID, version: version,
+                path: fields[3].trimmingCharacters(in: .whitespaces),
+                enabled: !disabled))
+        }
+        return exts
+    }
+
+    /// `pluginkit -e use|ignore -i <ext-id>` in the console user's pkd domain —
+    /// no elevation needed, just the right user context.
+    static func extSetEnabled(extID: String, enabled: Bool) throws -> String {
+        let mode = enabled ? "use" : "ignore"
+        return runAsConsoleUser("/usr/bin/pluginkit", ["-e", mode, "-i", extID])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

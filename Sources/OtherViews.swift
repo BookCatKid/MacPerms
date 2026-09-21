@@ -9,7 +9,9 @@ struct OtherView: View {
     var body: some View {
         switch pane {
         case .localNetwork: LocalNetworkView()
-        case .backgroundItems: BTMView()
+        case .loginItems: BTMView(loginOnly: true)
+        case .backgroundItems: BTMView(loginOnly: false)
+        case .appExtensions: AppExtensionsView()
         case .gatekeeper: GatekeeperView()
         case .location: LocationView()
         case .notifications: NotificationsView()
@@ -196,37 +198,55 @@ struct LocalNetworkView: View {
     }
 }
 
-// MARK: - Background Items (backgroundtaskmanagementd / .btm files)
+// MARK: - Background Items + Login Items (backgroundtaskmanagementd / .btm)
+//
+// Per-item on/off goes through launchd: every launchd-backed BTM item's enabled
+// state is mirrored in `launchctl print-disabled`, and `launchctl enable|
+// disable <domain>/<label>` flips it — the same mechanism Settings uses.
+// Items with no launchd registration (developer/app group records) stay
+// read-only.
 
 struct BTMView: View {
+    /// true → only open-at-login items (Settings → Open at Login);
+    /// false → the full background-activity list.
+    let loginOnly: Bool
+
     @EnvironmentObject var model: TCCViewModel
     @State private var rows: [PermRow] = []
     @State private var status = ""
     @State private var showResetConfirm = false
+    @State private var op: OtherOp?
 
     /// Best bundle-id for icon/name resolution: prefer the item's bundleID,
     /// else strip the leading "<type>." token off the identifier
     /// ("16.org.whatpulse.ChmodBPF" → "org.whatpulse.ChmodBPF").
     nonisolated static func itemBundleID(_ i: BTMItem) -> String {
         if let b = i.bundleID, b.contains(".") { return b }
-        let parts = i.identifier.split(separator: ".", maxSplits: 1)
-        if parts.count == 2, parts[0].allSatisfy(\.isNumber) { return String(parts[1]) }
-        return i.identifier
+        return i.launchdLabel
     }
 
     /// Identity resolution hits LaunchServices — run off the main thread.
-    nonisolated private static func row(for i: BTMItem) -> PermRow {
-        let id = Resolver.identity(for: itemBundleID(i), clientType: 0)
+    /// `launchd` is domain → label → enabled from print-disabled.
+    nonisolated private static func row(for i: BTMItem,
+                                        launchd: [String: [String: Bool]]) -> PermRow {
+        var id = Resolver.identity(for: itemBundleID(i), clientType: 0)
+        if id.appURL == nil, let exe = i.executable {
+            id = Resolver.identity(for: exe, clientType: 1)
+        }
         let type = i.type.replacingOccurrences(
             of: #"\s*\(0x[0-9a-fA-F]+\)"#, with: "", options: .regularExpression)
+        let launchdState = launchd[i.launchdDomain]?[i.launchdLabel]
+        let enabled = launchdState ?? i.enabled
         return PermRow(
             id: i.id, icon: id.icon, title: i.name, subtitle: i.identifier,
             service: type,
             status: i.status,
             statusColor: i.allowed ? .green : .red,
-            info: i.enabled ? "Enabled" : "Disabled",
+            info: enabled ? "Enabled" : "Disabled",
             detail: i.lastUse ?? i.url ?? "",
-            ops: [],
+            // launchctl can disable any service label — the entry is created
+            // on first write; grouping records (developer/app) are not services.
+            ops: i.isServiceType ? [.enable, .disable] : [],
             payload: i)
     }
 
@@ -234,16 +254,24 @@ struct BTMView: View {
         VStack(spacing: 0) {
             UnifiedListView(
                 rows: rows,
-                footerText: "read-only — per-item toggling is not exposed",
-                pageActions: [
+                footerText: "Allowed = user consent · Enabled = launchd state",
+                pageActions: loginOnly ? [] : [
                     .init(label: "Reset ALL background items…", destructive: true) {
                         showResetConfirm = true
                     }
                 ],
-                supportedOps: [],
-                onOp: { _, _ in })
+                supportedOps: [.enable, .disable],
+                onOp: { o, sel in
+                    let items = sel.compactMap { $0.payload as? BTMItem }
+                    switch o {
+                    case .enable:  ask(true, items)
+                    case .disable: ask(false, items)
+                    default: break
+                    }
+                })
             OtherStatus(text: status)
         }
+        .otherOpAlert($op, perform: perform)
         .alert("Reset all background items?", isPresented: $showResetConfirm) {
             Button("Reset everything", role: .destructive) {
                 Task.detached {
@@ -257,19 +285,151 @@ struct BTMView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Runs `sfltool resetbtm` as root. This wipes the entire .btm database — every login item and launch agent re-registers on next login/launch, and per-item user approvals are lost. This is Apple's supported nuclear option; there is no per-item reset.")
+            Text("Runs `sfltool resetbtm` as root. This wipes the entire .btm database — every login item and launch agent re-registers on next login/launch, and per-item user approvals are lost.")
         }
         .onAppear(perform: load)
         .onChange(of: model.otherReload) { _, _ in load() }
     }
 
+    private func ask(_ enable: Bool, _ items: [BTMItem]) {
+        guard !items.isEmpty else { return }
+        let names = items.prefix(4).map(\.name).joined(separator: ", ")
+            + (items.count > 4 ? " +\(items.count - 4) more" : "")
+        op = OtherOp(
+            title: "\(enable ? "Enable" : "Disable") \(items.count) item(s)?",
+            message: "\(names)\n\nRuns `launchctl \(enable ? "enable" : "disable") <domain>/<label>` for each item — the same per-service switch Settings toggles. State is re-read from print-disabled after writing.",
+            destructive: !enable) {
+                try items.map {
+                    try OtherStore.launchctlSetEnabled(
+                        domain: $0.launchdDomain, label: $0.launchdLabel, enabled: enable)
+                }.joined(separator: "\n")
+            }
+    }
+
+    private func perform() {
+        guard let o = op else { return }
+        op = nil
+        Task.detached {
+            do {
+                let out = try o.run()
+                await MainActor.run {
+                    status = "✓ \(out.isEmpty ? "Done — state re-read below." : out)"
+                    load()
+                }
+            } catch {
+                await MainActor.run { status = "✗ \(error.localizedDescription)" }
+            }
+        }
+    }
+
     private func load() {
+        let loginOnly = self.loginOnly
         Task.detached {
             let it = (try? OtherStore.backgroundItems()) ?? []
-            let rs = it.map { Self.row(for: $0) }
+            // One print-disabled read per launchd domain that has items.
+            var doms: [String: [String: Bool]] = [:]
+            for uid in Set(it.map(\.uid)) {
+                let d = uid > 0 ? "gui/\(uid)" : "system"
+                if doms[d] == nil { doms[d] = OtherStore.launchdDisabled(d) }
+            }
+            let rs = it.filter { !loginOnly || $0.type.contains("login") }
+                .map { Self.row(for: $0, launchd: doms) }
             await MainActor.run {
                 rows = rs
                 if it.isEmpty { status = "No items returned by `sfltool dumpbtm`." }
+            }
+        }
+    }
+}
+
+// MARK: - App Extensions (pkd / pluginkit)
+
+struct AppExtensionsView: View {
+    @EnvironmentObject var model: TCCViewModel
+    @State private var rows: [PermRow] = []
+    @State private var status = ""
+    @State private var op: OtherOp?
+
+    /// Identity resolution hits LaunchServices — run off the main thread.
+    nonisolated private static func row(for x: AppExtension) -> PermRow {
+        let id = Resolver.identity(for: x.path, clientType: 1)
+        let b = Bundle(url: URL(fileURLWithPath: x.path))
+        let name = b?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? b?.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? x.extID
+        let point = ((b?.object(forInfoDictionaryKey: "NSExtension") as? [String: Any])?["NSExtensionPointIdentifier"] as? String)
+            .map { $0.replacingOccurrences(of: "com.apple.", with: "") } ?? ""
+        return PermRow(
+            id: x.extID, icon: id.icon, title: name, subtitle: x.extID,
+            service: point,
+            status: x.enabled ? "Enabled" : "Disabled",
+            statusColor: x.enabled ? .green : .red,
+            info: x.version == "(null)" ? "" : x.version,
+            detail: x.path,
+            ops: [.enable, .disable],
+            payload: x)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            UnifiedListView(
+                rows: rows,
+                supportedOps: [.enable, .disable],
+                onOp: { o, sel in
+                    let xs = sel.compactMap { $0.payload as? AppExtension }
+                    switch o {
+                    case .enable:  ask(true, xs)
+                    case .disable: ask(false, xs)
+                    default: break
+                    }
+                })
+            OtherStatus(text: status)
+        }
+        .otherOpAlert($op, perform: perform)
+        .onAppear(perform: load)
+        .onChange(of: model.otherReload) { _, _ in load() }
+    }
+
+    private func ask(_ enable: Bool, _ xs: [AppExtension]) {
+        guard !xs.isEmpty else { return }
+        let names = xs.prefix(4).map(\.extID).joined(separator: ", ")
+            + (xs.count > 4 ? " +\(xs.count - 4) more" : "")
+        op = OtherOp(
+            title: "\(enable ? "Enable" : "Disable") \(xs.count) extension(s)?",
+            message: "\(names)\n\nRuns `pluginkit -e \(enable ? "use" : "ignore") -i <id>` in the console user's pkd domain. The list is re-read after writing.",
+            destructive: !enable) {
+                try xs.map {
+                    let out = try OtherStore.extSetEnabled(extID: $0.extID, enabled: enable)
+                    return out.isEmpty ? "\($0.extID): OK" : "\($0.extID): \(out)"
+                }.joined(separator: "\n")
+            }
+    }
+
+    private func perform() {
+        guard let o = op else { return }
+        op = nil
+        Task.detached {
+            do {
+                let out = try o.run()
+                let fresh = (try? OtherStore.appExtensions()) ?? []
+                let rs = fresh.map { Self.row(for: $0) }
+                await MainActor.run {
+                    status = "✓ \(out)"
+                    rows = rs
+                }
+            } catch {
+                await MainActor.run { status = "✗ \(error.localizedDescription)" }
+            }
+        }
+    }
+
+    private func load() {
+        Task.detached {
+            let xs = (try? OtherStore.appExtensions()) ?? []
+            let rs = xs.map { Self.row(for: $0) }
+            await MainActor.run {
+                rows = rs
+                if xs.isEmpty { status = "`pluginkit -m` returned no extensions." }
             }
         }
     }
@@ -375,15 +535,20 @@ struct LocationView: View {
     @State private var op: OtherOp?
 
     /// Identity resolution hits LaunchServices — run off the main thread.
+    /// Real identity comes from the entry's BundleId/path — the composite
+    /// locationd key alone resolves to nothing.
     nonisolated private static func row(for c: LocationClient) -> PermRow {
-        let id = Resolver.identity(for: c.bundleID, clientType: 0)
+        var id = Resolver.identity(for: c.clientID, clientType: c.isPathClient ? 1 : 0)
+        if id.appURL == nil, let bp = c.bundlePath {
+            id = Resolver.identity(for: bp, clientType: 1)
+        }
         return PermRow(
-            id: c.bundleID, icon: id.icon, title: id.name, subtitle: c.bundleID,
+            id: c.key, icon: id.icon, title: id.name, subtitle: c.clientID,
             service: "Location",
             status: c.authorized ? "Allowed" : "Denied",
             statusColor: c.authorized ? .green : .red,
             info: "",
-            detail: c.executable ?? "",
+            detail: c.bundlePath ?? "",
             ops: [.allow, .deny],
             payload: c)
     }
@@ -412,10 +577,10 @@ struct LocationView: View {
 
     private func ask(_ c: LocationClient, allow: Bool) {
         op = OtherOp(
-            title: "\(allow ? "Allow" : "Deny") Location Services for \(c.bundleID)?",
+            title: "\(allow ? "Allow" : "Deny") Location Services for \(c.clientID)?",
             message: "Writes Authorized=\(allow) to the locationd clients store as root. UNVERIFIED write path — locationd may ignore it until restarted. Relaunch the app to test.",
             destructive: !allow) {
-                try OtherStore.locSet(bundleID: c.bundleID, allow: allow)
+                try OtherStore.locSet(key: c.key, allow: allow)
             }
     }
 
