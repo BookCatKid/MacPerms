@@ -1,0 +1,9 @@
+build/
+.DS_Store
+
+# compiled binaries checked in next to their sources
+Tests/selftest
+Scripts/nedump
+Scripts/probe_one
+Scripts/probe_tcc_calls
+Scripts/probe_tcc_symbols
