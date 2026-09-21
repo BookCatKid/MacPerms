@@ -75,12 +75,22 @@ struct UnifiedListView: View {
         filtered.filter { selection.contains($0.id) && !$0.ops.isEmpty }
     }
 
+    /// Columns get real minimums; the table is wrapped in a horizontal
+    /// ScrollView so overflow scrolls sideways instead of being clipped —
+    /// SwiftUI Table has no horizontal scrolling of its own.
+    private var columnMinWidth: CGFloat { 180 + 120 + 85 + 110 + 320 }
+
     var body: some View {
         VStack(spacing: 0) {
+            GeometryReader { geo in
+            ScrollView(.horizontal) {
             Table(filtered.sorted(using: sortOrder), selection: $selection, sortOrder: $sortOrder) {
                 TableColumn("Application", value: \.title) { r in
                     HStack(spacing: 6) {
                         Image(nsImage: r.icon)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 20, height: 20)
                         VStack(alignment: .leading) {
                             Text(r.title).lineLimit(1)
                             Text(r.subtitle).font(.caption)
@@ -88,12 +98,12 @@ struct UnifiedListView: View {
                         }
                     }
                 }
-                .width(min: 160, ideal: 220)
+                .width(min: 180, ideal: 240)
 
                 TableColumn("Service", value: \.service) { r in
                     Text(r.service).lineLimit(1)
                 }
-                .width(min: 100, ideal: 140)
+                .width(min: 120, ideal: 160)
 
                 TableColumn("Status", value: \.status) { r in
                     Text(r.status)
@@ -107,11 +117,12 @@ struct UnifiedListView: View {
                 TableColumn("Info", value: \.info) { r in
                     Text(r.info).font(.callout).lineLimit(1)
                 }
-                .width(min: 90, ideal: 120)
+                .width(min: 110, ideal: 140)
 
                 TableColumn("Detail", value: \.detail) { r in
                     Text(r.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
+                .width(min: 320, ideal: 420)
             }
             .contextMenu(forSelectionType: String.self) { ids in
                 let sel = filtered.filter { ids.contains($0.id) }
@@ -132,6 +143,9 @@ struct UnifiedListView: View {
                         }
                     }
                 }
+            }
+            .frame(minWidth: max(geo.size.width, columnMinWidth))
+            }
             }
 
             Divider()

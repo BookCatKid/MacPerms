@@ -388,7 +388,12 @@ struct ContentView: View {
                     Spacer()
                     Text("\(count)").foregroundStyle(.secondary).font(.callout)
                 }
-            } icon: { Image(nsImage: id.icon) }
+            } icon: {
+                Image(nsImage: id.icon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 18, height: 18)
+            }
             .tag(NavItem.client(key))
         }
     }
