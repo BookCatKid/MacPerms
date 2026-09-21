@@ -3,7 +3,7 @@
 //          -sdk /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
 import Foundation
 
-let client = "dev.tccmanager.selftest"
+let client = "dev.macperms.selftest"
 let service = "kTCCServiceMicrophone"   // user-DB service
 var failures = 0
 

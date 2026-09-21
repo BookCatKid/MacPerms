@@ -1,11 +1,11 @@
-APP      := TCCManager
+APP      := MacPerms
 BUILD    := build
 BUNDLE   := $(BUILD)/$(APP).app
 MACOS    := $(BUNDLE)/Contents/MacOS
 RES      := $(BUNDLE)/Contents/Resources
 SOURCES  := $(wildcard Sources/*.swift)
 SDK      := /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
-IDENTITY := dev.tccmanager.app
+IDENTITY := dev.macperms.app
 
 .PHONY: all run clean
 

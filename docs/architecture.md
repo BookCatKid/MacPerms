@@ -108,7 +108,7 @@ Entitlements held by System Settings (`SecurityPrivacyExtension.appex`):
 
 `tccutil` (macOS 27): only `tccutil reset SERVICE [BUNDLE_ID]` (`All` = all services).
 
-## Implications for TCCManager
+## Implications for MacPerms
 
 1. **Read**: sqlite3 on both DBs. System DB is world-readable; user DB is
    user-readable. No privileges needed to *display* everything.

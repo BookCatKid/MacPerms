@@ -5,15 +5,15 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
-	<string>TCCManager</string>
+	<string>MacPerms</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.tccmanager.app</string>
+	<string>dev.macperms.app</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>TCC Manager</string>
+	<string>MacPerms</string>
 	<key>CFBundleDisplayName</key>
-	<string>TCC Manager</string>
+	<string>MacPerms</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

@@ -125,7 +125,7 @@ struct ContentView: View {
     /// loading screen afterwards.
     private var loadingView: some View {
         VStack(spacing: 14) {
-            Text("TCC Manager").font(.title.bold())
+            Text("MacPerms").font(.title.bold())
             ProgressView()
             VStack(alignment: .leading, spacing: 4) {
                 loadRow("TCC databases", done: model.didInitialLoad)

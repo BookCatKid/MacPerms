@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct TCCManagerApp: App {
+struct MacPermsApp: App {
     @StateObject private var model = TCCViewModel()
     @StateObject private var stores = OtherStoresModel()
 
@@ -24,13 +24,13 @@ struct TCCManagerApp: App {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         proc.arguments = ["-e",
-            "do shell script \"\(escaped)\" with prompt \"TCC Manager runs as root — all permission edits apply without further prompts.\" with administrator privileges"]
+            "do shell script \"\(escaped)\" with prompt \"MacPerms runs as root — all permission edits apply without further prompts.\" with administrator privileges"]
         try? proc.run()
         exit(0)
     }
 
     var body: some Scene {
-        WindowGroup("TCC Manager") {
+        WindowGroup("MacPerms") {
             ContentView()
                 .environmentObject(model)
                 .environmentObject(stores)

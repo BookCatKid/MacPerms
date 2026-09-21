@@ -100,7 +100,7 @@ final class TCCViewModel: ObservableObject {
         case .client:
             return "All TCC permission records for one application, across both databases.\n\nGrant/Deny/Reset write auth_value directly (user DB) or via the privileged helper (system DB); every write is verified by read-back. Managed (MDM) rows are read-only. Relaunch the app to pick up changes."
         case nil:
-            return "TCC Manager — inspect and edit macOS permission stores.\n\nTCC section: the Transparency, Consent & Control databases (user + system). Other Stores: Local Network (nehelper), Background Items (backgroundtaskmanagementd), Gatekeeper (syspolicyd), Location Services (locationd)."
+            return "MacPerms — inspect and edit macOS permission stores.\n\nTCC section: the Transparency, Consent & Control databases (user + system). Other Stores: Local Network (nehelper), Background Items (backgroundtaskmanagementd), Gatekeeper (syspolicyd), Location Services (locationd)."
         }
     }
 
