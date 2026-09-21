@@ -452,52 +452,53 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
         let names = sel.prefix(4).map(\.title).joined(separator: ", ")
             + (sel.count > 4 ? " +\(sel.count - 4) more" : "")
 
-        if let rs = nonEmpty(sel.compactMap { $0.payload as? TCCRecord }) {
-            guard o == .reset else { return }
-            op = OtherOp(
+        // A selection can mix payload types (Not Installed sweep merges every
+        // store). Each type contributes a sub-op; they run under one alert.
+        var parts: [OtherOp] = []
+
+        if let rs = nonEmpty(sel.compactMap { $0.payload as? TCCRecord }), o == .reset {
+            parts.append(OtherOp(
                 title: "Delete \(rs.count) TCC record(s)?",
                 message: "\(names)\n\nDeletes the TCC records from their databases — each delete is verified by read-back.",
                 destructive: true) {
                     let out = Self.each(rs, \.id) { try Self.tccDelete($0) }
                     Elevation.restartUserTCCD()
                     return out
-                }
-            return
+                })
         }
 
         if let rs = nonEmpty(sel.compactMap { $0.payload as? NEPlist.Rule }) {
             switch o {
             case .allow, .deny:
                 let allow = o == .allow
-                op = OtherOp(
+                parts.append(OtherOp(
                     title: "\(allow ? "Allow" : "Deny") Local Network for \(rs.count) app(s)?",
                     message: "\(names)\n\nSets DenyMulticast=\(!allow) on the per-user networkprivacy configuration.",
                     destructive: !allow) {
                         Self.each(rs, \.signingID) {
                             try OtherStore.neSet(signingID: $0.signingID, allow: allow)
                         }
-                    }
+                    })
             case .reset:
-                op = OtherOp(
+                parts.append(OtherOp(
                     title: "Reset Local Network for \(rs.count) app(s)?",
                     message: "\(names)\n\nClears the explicit decision (DenyMulticast restored to default, preference flag cleared) so the app is prompted again.",
                     destructive: true) {
                         Self.each(rs, \.signingID) {
                             try OtherStore.neReset(signingID: $0.signingID)
                         }
-                    }
+                    })
             case .remove:
-                op = OtherOp(
+                parts.append(OtherOp(
                     title: "Remove Local Network record for \(rs.count) app(s)?",
                     message: "\(names)\n\nDeletes the rule from the networkprivacy configuration entirely — the entry disappears and the app is prompted as if it had never asked.",
                     destructive: true) {
                         Self.each(rs, \.signingID) {
                             try OtherStore.neRemove(signingID: $0.signingID)
                         }
-                    }
+                    })
             default: break
             }
-            return
         }
 
         if let items = nonEmpty(sel.compactMap { $0.payload as? BTMItem }) {
@@ -505,38 +506,39 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
             case .enable, .disable:
                 let enable = o == .enable
                 let svc = items.filter { $0.isServiceType }
-                guard !svc.isEmpty else { return }
-                op = OtherOp(
-                    title: "\(enable ? "Enable" : "Disable") \(svc.count) item(s)?",
-                    message: "\(names)\n\nRuns `launchctl \(enable ? "enable" : "disable") <domain>/<label>` for each item — the same per-service switch Settings toggles. State is re-read from print-disabled after writing.",
-                    destructive: !enable) {
-                        Self.each(svc, \.launchdLabel) {
-                            try OtherStore.launchctlSetEnabled(
-                                domain: $0.launchdDomain, label: $0.launchdLabel, enabled: enable)
-                        }
-                    }
+                if !svc.isEmpty {
+                    parts.append(OtherOp(
+                        title: "\(enable ? "Enable" : "Disable") \(svc.count) item(s)?",
+                        message: "\(names)\n\nRuns `launchctl \(enable ? "enable" : "disable") <domain>/<label>` for each item — the same per-service switch Settings toggles. State is re-read from print-disabled after writing.",
+                        destructive: !enable) {
+                            Self.each(svc, \.launchdLabel) {
+                                try OtherStore.launchctlSetEnabled(
+                                    domain: $0.launchdDomain, label: $0.launchdLabel, enabled: enable)
+                            }
+                        })
+                }
             case .remove:
                 let apps = items.filter { $0.type.contains("app") && $0.enabled }
-                guard !apps.isEmpty else { return }
-                op = OtherOp(
-                    title: "Remove \(apps.count) login item(s)?",
-                    message: "\(names)\n\nDeletes the 'Open at Login' entry via System Events — the same as '-' in Settings → Login Items.",
-                    destructive: true) {
-                        Self.each(apps, \.name) {
-                            let out = try OtherStore.seRemoveLoginItem(name: $0.name)
-                            return out.isEmpty ? "removed" : out
-                        }
-                    }
+                if !apps.isEmpty {
+                    parts.append(OtherOp(
+                        title: "Remove \(apps.count) login item(s)?",
+                        message: "\(names)\n\nDeletes the 'Open at Login' entry via System Events — the same as '-' in Settings → Login Items.",
+                        destructive: true) {
+                            Self.each(apps, \.name) {
+                                let out = try OtherStore.seRemoveLoginItem(name: $0.name)
+                                return out.isEmpty ? "removed" : out
+                            }
+                        })
+                }
             default: break
             }
-            return
         }
 
         if let xs = nonEmpty(sel.compactMap { $0.payload as? AppExtension }) {
             switch o {
             case .enable, .disable:
                 let enable = o == .enable
-                op = OtherOp(
+                parts.append(OtherOp(
                     title: "\(enable ? "Enable" : "Disable") \(xs.count) extension(s)?",
                     message: "\(names)\n\nRuns `pluginkit -e \(enable ? "use" : "ignore") -i <id>` in the console user's pkd domain. The list is re-read after writing.",
                     destructive: !enable) {
@@ -544,9 +546,9 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                             let out = try OtherStore.extSetEnabled(extID: $0.extID, enabled: enable)
                             return out.isEmpty ? "OK" : out
                         }
-                    }
+                    })
             case .reset:
-                op = OtherOp(
+                parts.append(OtherOp(
                     title: "Reset election for \(xs.count) extension(s)?",
                     message: "\(names)\n\nRuns `pluginkit -e default -i <id>` — forgets your use/ignore choice so the extension returns to pkd's default election.",
                     destructive: true) {
@@ -554,9 +556,9 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                             let out = try OtherStore.extResetElection(extID: $0.extID)
                             return out.isEmpty ? "OK" : out
                         }
-                    }
+                    })
             case .remove:
-                op = OtherOp(
+                parts.append(OtherOp(
                     title: "Unregister \(xs.count) extension(s)?",
                     message: "\(names)\n\nRuns `pluginkit -r <path>` — removes the extension from pkd's registry. It re-registers on next host-app launch or pkd rescan.",
                     destructive: true) {
@@ -564,78 +566,91 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                             let out = try OtherStore.extUnregister(path: $0.path)
                             return out.isEmpty ? "removed" : out
                         }
-                    }
+                    })
             default: break
             }
-            return
         }
 
         if let rs = nonEmpty(sel.compactMap { $0.payload as? GKRule }) {
             let labels = Array(Set(rs.map(\.authority))).sorted()
-            guard !labels.isEmpty else { return }
-            let flag: [String]
-            let verb: String
-            switch o {
-            case .enable:  flag = ["--enable"];  verb = "Enable"
-            case .disable: flag = ["--disable"]; verb = "Disable"
-            case .remove:  flag = ["--remove"];  verb = "Remove"
-            default: return
-            }
-            op = OtherOp(
-                title: "\(verb) Gatekeeper label(s): \(labels.joined(separator: ", "))?",
-                message: "Runs `spctl \(flag.joined(separator: " ")) --label` for each label as root (affects \(rs.count) listed rule(s)).",
-                destructive: o != .enable) {
-                    Self.each(labels, { $0 }) { try OtherStore.gk(flag + ["--label", $0]) }
+            if !labels.isEmpty {
+                let flag: [String]
+                let verb: String
+                switch o {
+                case .enable:  flag = ["--enable"];  verb = "Enable"
+                case .disable: flag = ["--disable"]; verb = "Disable"
+                case .remove:  flag = ["--remove"];  verb = "Remove"
+                default: flag = []; verb = ""
                 }
-            return
+                if !flag.isEmpty {
+                    parts.append(OtherOp(
+                        title: "\(verb) Gatekeeper label(s): \(labels.joined(separator: ", "))?",
+                        message: "Runs `spctl \(flag.joined(separator: " ")) --label` for each label as root (affects \(rs.count) listed rule(s)).",
+                        destructive: o != .enable) {
+                            Self.each(labels, { $0 }) { try OtherStore.gk(flag + ["--label", $0]) }
+                        })
+                }
+            }
         }
 
         if let cl = nonEmpty(sel.compactMap { $0.payload as? LocationClient }) {
             switch o {
             case .allow, .deny:
                 let allow = o == .allow
-                op = OtherOp(
+                parts.append(OtherOp(
                     title: "\(allow ? "Allow" : "Deny") Location Services for \(cl.count) client(s)?",
                     message: "\(names)\n\nWrites Authorized=\(allow) to the locationd clients store as root. UNVERIFIED write path — locationd may ignore it until restarted. Relaunch the app to test.",
                     destructive: !allow) {
                         Self.each(cl, \.key) { try OtherStore.locSet(key: $0.key, allow: allow) }
-                    }
+                    })
             case .remove:
-                op = OtherOp(
+                parts.append(OtherOp(
                     title: "Remove \(cl.count) Location Services record(s)?",
                     message: "\(names)\n\nDeletes the client entry from the locationd stores entirely — the app re-prompts next time it requests location.",
                     destructive: true) {
                         Self.each(cl, \.key) { try OtherStore.locRemove(key: $0.key) }
-                    }
+                    })
             default: break
             }
-            return
         }
 
         if let apps = nonEmpty(sel.compactMap { $0.payload as? NotificationApp }) {
             switch o {
             case .allow, .deny:
                 let allow = o == .allow
-                op = OtherOp(
+                parts.append(OtherOp(
                     title: "\(allow ? "Allow" : "Disable") notifications for \(apps.count) app(s)?",
                     message: "\(names)\n\n\(allow ? "Sets" : "Clears") the allow-notifications flag (bit 25) in the usernoted store and restarts usernoted + cfprefsd to re-read it.",
                     destructive: !allow) {
                         Self.each(apps, \.bundleID) {
                             try OtherStore.ncSet(bundleID: $0.bundleID, allow: allow)
                         }
-                    }
-            case .reset:
-                op = OtherOp(
+                    })
+            case .reset, .remove:
+                parts.append(OtherOp(
                     title: "Reset notification settings for \(apps.count) app(s)?",
                     message: "\(names)\n\nRemoves the app's entry from the usernoted store entirely — it re-registers and re-prompts on next launch.",
                     destructive: true) {
                         Self.each(apps, \.bundleID) {
                             try OtherStore.ncReset(bundleID: $0.bundleID)
                         }
-                    }
+                    })
             default: break
             }
-            return
+        }
+
+        guard let first = parts.first else { return }
+        if parts.count == 1 {
+            op = first
+        } else {
+            op = OtherOp(
+                title: "\(o.label) \(sel.count) record(s) across \(parts.count) stores?",
+                message: names + "\n\n" + parts.map(\.title).joined(separator: "\n"),
+                destructive: parts.contains(where: { $0.destructive })) {
+                    var outs: [String] = []
+                    for p in parts { outs.append(try p.run()) }
+                    return outs.joined(separator: "\n")
+                }
         }
     }
 
