@@ -8,3 +8,4 @@ Scripts/nedump
 Scripts/probe_one
 Scripts/probe_tcc_calls
 Scripts/probe_tcc_symbols
+design/*.xml
