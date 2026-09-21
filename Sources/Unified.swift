@@ -278,6 +278,12 @@ private struct PermTableView: NSViewRepresentable {
             }
             if !m.items.isEmpty, !sel.isEmpty { m.addItem(.separator()) }
             if let first = sel.first {
+                if Self.revealURL(for: first) != nil {
+                    let reveal = NSMenuItem(title: "Reveal in Finder",
+                                            action: #selector(didReveal), keyEquivalent: "")
+                    reveal.target = self
+                    m.addItem(reveal)
+                }
                 let copy = NSMenuItem(title: "Copy Identifier", action: #selector(didCopyID), keyEquivalent: "")
                 copy.target = self
                 m.addItem(copy)
@@ -291,6 +297,54 @@ private struct PermTableView: NSViewRepresentable {
             return m
         }
 
+        /// Filesystem location a row can be revealed at — each payload type's
+        /// best path (app bundle first, then executable/extension path).
+        nonisolated static func revealURL(for r: PermRow) -> URL? {
+            let fm = FileManager.default
+            func url(_ p: String?) -> URL? {
+                guard let p, !p.isEmpty else { return nil }
+                if p.hasPrefix("file://") { return URL(string: p) }
+                return fm.fileExists(atPath: p) ? URL(fileURLWithPath: p) : nil
+            }
+            switch r.payload {
+            case let t as TCCRecord:
+                if t.clientType == 1 || t.client.hasPrefix("/") { return url(t.client) }
+                return Resolver.identity(for: t.client, clientType: 0).appURL
+            case let x as NEPlist.Rule:
+                return url(x.path)
+            case let i as BTMItem:
+                return url(i.url) ?? url(i.executable)
+            case let x as AppExtension:
+                return url(x.path)
+            case let c as LocationClient:
+                return url(c.bundlePath) ?? (c.isPathClient ? url(c.clientID) : nil)
+            case let n as NotificationApp:
+                return url(n.path)
+            default:
+                return nil
+            }
+        }
+
+        /// The app usually runs as root — NSPasteboard.general can then bind
+        /// to a bootstrap other than the user's, so the write is invisible to
+        /// them. Going through pbcopy in the console user's domain always
+        /// lands on the clipboard they actually see.
+        private func copyText(_ s: String) {
+            if geteuid() == 0 {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+                p.arguments = ["asuser", "\(OtherStore.consoleUID())", "/usr/bin/pbcopy"]
+                let stdin = Pipe()
+                p.standardInput = stdin
+                try? p.run()
+                stdin.fileHandleForWriting.write(Data(s.utf8))
+                try? stdin.fileHandleForWriting.close()
+                p.waitUntilExit()
+            }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(s, forType: .string)
+        }
+
         @objc private func didChooseOp(_ item: NSMenuItem) {
             guard let raw = item.representedObject as? String,
                   let op = RowOp(rawValue: raw) else { return }
@@ -299,14 +353,20 @@ private struct PermTableView: NSViewRepresentable {
 
         @objc private func didCopyID() {
             guard let s = menuRows.first?.subtitle else { return }
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(s, forType: .string)
+            copyText(s)
         }
 
         @objc private func didCopyExtra() {
             guard let extra = menuRows.first?.extraCopy?() else { return }
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(extra.text, forType: .string)
+            copyText(extra.text)
+        }
+
+        @objc private func didReveal() {
+            guard let r = menuRows.first,
+                  let u = Self.revealURL(for: r) else { return }
+            // Finder runs as the console user — `open -R` through their domain
+            // is the reliable path when this process is root.
+            _ = OtherStore.runAsConsoleUser("/usr/bin/open", ["-R", u.path])
         }
     }
 }
