@@ -224,18 +224,41 @@ case "btm-set":
                       as? NSMutableDictionary,
               let objects = plist["$objects"] as? NSMutableArray else { continue }
         var changed = false
+        // Family root: the target's own `container` when it's a child record,
+        // else the target itself. Settings' switch is family-wide — every
+        // member moves together no matter which one is toggled.
+        var root = target
         for i in 0..<objects.count {
             guard let rec = objects[i] as? NSMutableDictionary,
                   let iuid = NEPlist.uidIndex(rec["identifier"]), iuid < objects.count,
-                  let ident = objects[iuid] as? String,
-                  let disp = rec["disposition"] as? Int else { continue }
-            var isTarget = ident == target
-            if !isTarget, let cuid = NEPlist.uidIndex(rec["container"]),
-               cuid < objects.count, (objects[cuid] as? String) == target {
-                isTarget = true
+                  (objects[iuid] as? String) == target,
+                  let cuid = NEPlist.uidIndex(rec["container"]), cuid < objects.count,
+                  let c = objects[cuid] as? String, c != "$null" else { continue }
+            root = c
+        }
+        // Family = root + all descendants (fixpoint covers deeper nesting).
+        var family: Set<String> = [root]
+        var grew = true
+        while grew {
+            grew = false
+            for i in 0..<objects.count {
+                guard let rec = objects[i] as? NSMutableDictionary,
+                      let iuid = NEPlist.uidIndex(rec["identifier"]), iuid < objects.count,
+                      let ident = objects[iuid] as? String, !family.contains(ident),
+                      let cuid = NEPlist.uidIndex(rec["container"]), cuid < objects.count,
+                      let c = objects[cuid] as? String, family.contains(c)
+                else { continue }
+                family.insert(ident)
+                grew = true
             }
+        }
+        for i in 0..<objects.count {
+            guard let rec = objects[i] as? NSMutableDictionary,
+                  let iuid = NEPlist.uidIndex(rec["identifier"]), iuid < objects.count,
+                  let ident = objects[iuid] as? String, family.contains(ident),
+                  let disp = rec["disposition"] as? Int else { continue }
             let newDisp = en == 1 ? disp | 0x3 : disp & ~0x2
-            guard isTarget, newDisp != disp else { continue }
+            guard newDisp != disp else { continue }
             rec["disposition"] = newDisp
             if let g = rec["generation"] as? Int { rec["generation"] = g + 1 }
             rec["modificationDate"] = Date().timeIntervalSinceReferenceDate
