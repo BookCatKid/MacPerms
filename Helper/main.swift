@@ -202,10 +202,13 @@ case "btm-remove":
     print(removed == 0 ? "OK already absent" : "OK removed \(removed) record(s)")
 
 case "btm-set":
-    // Set or clear the 'enabled' bit (0x1) of a BTM ItemRecord's disposition —
-    // the same bit System Settings' per-item toggle writes. Same store surgery
-    // as btm-remove: SIGKILL the daemon on both sides so it can't flush a
-    // stale in-memory copy over the edit.
+    // Mirror System Settings' Background App Activity toggle. Observed write
+    // semantics: ON sets enabled+allowed (0x3); OFF clears only 'allowed'
+    // (0x2) — enabled/notified persist (0x9 = enabled+disallowed+notified is
+    // a normal off-state). The toggle also cascades to child records whose
+    // 'container' is the parent's identifier. Same store surgery as
+    // btm-remove: SIGKILL the daemon on both sides so it can't flush a stale
+    // in-memory copy over the edit.
     guard args.count == 3, let en = Int(args[2]), en == 0 || en == 1
     else { fail("args") }
     let target = args[1]
@@ -224,10 +227,16 @@ case "btm-set":
         for i in 0..<objects.count {
             guard let rec = objects[i] as? NSMutableDictionary,
                   let iuid = NEPlist.uidIndex(rec["identifier"]), iuid < objects.count,
-                  (objects[iuid] as? String) == target,
-                  let disp = rec["disposition"] as? Int,
-                  en == 1 ? (disp & 1) == 0 : (disp & 1) != 0 else { continue }
-            rec["disposition"] = en == 1 ? disp | 1 : disp & ~1
+                  let ident = objects[iuid] as? String,
+                  let disp = rec["disposition"] as? Int else { continue }
+            var isTarget = ident == target
+            if !isTarget, let cuid = NEPlist.uidIndex(rec["container"]),
+               cuid < objects.count, (objects[cuid] as? String) == target {
+                isTarget = true
+            }
+            let newDisp = en == 1 ? disp | 0x3 : disp & ~0x2
+            guard isTarget, newDisp != disp else { continue }
+            rec["disposition"] = newDisp
             if let g = rec["generation"] as? Int { rec["generation"] = g + 1 }
             rec["modificationDate"] = Date().timeIntervalSinceReferenceDate
             touched += 1

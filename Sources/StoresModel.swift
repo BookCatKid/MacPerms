@@ -111,29 +111,27 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
         }
         let type = i.type.replacingOccurrences(
             of: #"\s*\(0x[0-9a-fA-F]+\)"#, with: "", options: .regularExpression)
-        // Effective state: BOTH gates must allow the item — the launchd
-        // override (when one exists) and the BTM disposition bit. An
-        // override reading 'enabled' must not mask a disabled disposition.
+        // The Settings toggle IS the disposition 'allowed' bit (0x2): OFF
+        // clears it (enabled/notified persist), ON sets 0x3. 'enabled' (0x1)
+        // is secondary — whether the item is armed to actually run.
         let launchdState = launchd[i.launchdDomain]?[i.launchdLabel]
-        let enabled = (launchdState ?? true) && i.enabled
-        // Enable/Disable flips the record's disposition enabled bit — the
-        // same write the Settings toggle makes — so it applies to every
-        // record type (app groupings, dock tiles, tasks), not just launchd
-        // services. Enable also clears a stale launchd override on service
-        // records, but Disable never writes one: launchd overrides are a
-        // second kill-switch Settings can't see or undo.
+        // Enable/Disable writes the disposition bits the Settings toggle
+        // writes (ON: |0x3, OFF: &~0x2), cascading to child records via
+        // their 'container' pointer. Applies to every record type. Enable
+        // also clears a stale launchd override on service records, but
+        // Disable never writes one: launchd overrides are a second
+        // kill-switch Settings can't see or undo.
         // Every record is removable: needt btm-remove drops the ItemRecord
         // from the .btm archive (enabled `app` records also lose their
         // System Events 'Open at Login' entry).
         let ops: Set<RowOp> = [.remove, .enable, .disable]
-        // Status = the Settings-style toggle state (enabled/disposition);
-        // Info = the consent bit, which toggles never touch.
         var row = PermRow(
             id: i.id, icon: id.icon, title: i.name, subtitle: i.identifier,
             service: type,
-            status: !i.allowed ? "Disallowed" : (enabled ? "Enabled" : "Disabled"),
-            statusColor: !i.allowed ? .red : (enabled ? .green : .secondary),
-            info: i.allowed ? "Allowed" : "Blocked",
+            status: i.allowed ? "Enabled" : "Disabled",
+            statusColor: i.allowed ? .green : .secondary,
+            info: (launchdState == false ? "launchd off · " : "")
+                  + (i.enabled ? "Active" : "Inactive"),
             detail: i.lastUse ?? i.url ?? "",
             ops: ops,
             payload: i)
@@ -583,7 +581,7 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
                 let enable = o == .enable
                 parts.append(OtherOp(
                     title: "\(enable ? "Enable" : "Disable") \(items.count) background item(s)?",
-                    message: "\(names)\n\nFlips the enabled bit of each record's BTM disposition — the same write the System Settings toggle performs — then kills backgroundtaskmanagementd so it re-reads. Enable also clears any stale launchd override on launchd-backed items so the service can actually run.",
+                    message: "\(names)\n\nWrites the same disposition bits the System Settings toggle writes — enabled+allowed for on, clears allowed for off — cascading to child records, then kills backgroundtaskmanagementd so it re-reads. Enable also clears any stale launchd override on launchd-backed items so the service can actually run.",
                     destructive: !enable) {
                         Self.each(items, \.identifier) {
                             var msgs = [try OtherStore.btmSetEnabled(
