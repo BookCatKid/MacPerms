@@ -136,7 +136,7 @@ struct BTMView: View {
         OtherPaneShell(pane: .backgroundItems) {
             UnifiedListView(
                 rows: stores.rows[.backgroundItems] ?? [],
-                footerText: "Allowed = user consent · Enabled = launchd state",
+                footerText: "Status = effective toggle · Info = user consent",
                 supportedOps: [.enable, .disable, .remove],
                 onOp: stores.ask)
         }

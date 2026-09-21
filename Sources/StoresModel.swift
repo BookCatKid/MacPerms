@@ -126,12 +126,14 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
         // from the .btm archive (enabled `app` records also lose their
         // System Events 'Open at Login' entry).
         let ops: Set<RowOp> = [.remove, .enable, .disable]
+        // Status = the Settings-style toggle state (enabled/disposition);
+        // Info = the consent bit, which toggles never touch.
         var row = PermRow(
             id: i.id, icon: id.icon, title: i.name, subtitle: i.identifier,
             service: type,
-            status: i.status,
-            statusColor: i.allowed ? .green : .red,
-            info: enabled ? "Enabled" : "Disabled",
+            status: !i.allowed ? "Disallowed" : (enabled ? "Enabled" : "Disabled"),
+            statusColor: !i.allowed ? .red : (enabled ? .green : .secondary),
+            info: i.allowed ? "Allowed" : "Blocked",
             detail: i.lastUse ?? i.url ?? "",
             ops: ops,
             payload: i)
