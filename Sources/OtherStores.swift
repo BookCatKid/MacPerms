@@ -124,6 +124,22 @@ enum OtherStore {
         return Int(out.trimmingCharacters(in: .whitespacesAndNewlines)) ?? Int(getuid())
     }
 
+    /// Username of the console user (for per-user `killall -u`).
+    static func consoleUserName() -> String {
+        let out = Resolver.run("/usr/bin/stat", ["-f", "%Su", "/dev/console"])
+        let name = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? NSUserName() : name
+    }
+
+    /// Home directory of the console user — when the app runs as root,
+    /// NSHomeDirectory() would be /var/root, so resolve via getpwuid.
+    static func consoleHome() -> String {
+        if geteuid() == 0, let pw = getpwuid(uid_t(consoleUID())) {
+            return String(cString: pw.pointee.pw_dir)
+        }
+        return NSHomeDirectory()
+    }
+
     /// Run a command inside the console user's context (for per-user daemons
     /// like pkd when the app itself is root).
     static func runAsConsoleUser(_ path: String, _ arguments: [String]) -> String {
@@ -132,6 +148,107 @@ enum OtherStore {
                 ["asuser", "\(consoleUID())", path] + arguments)
         }
         return Resolver.run(path, arguments)
+    }
+
+    // MARK: Service restarts (daemon cache drops)
+
+    /// kill a daemon by name. `perUser` restricts to the console user's
+    /// instance (usernoted, pkd, tccd's user half…); system daemons just die.
+    static func restartDaemon(_ name: String, perUser: Bool) throws -> String {
+        let target = perUser ? "-u \(Elevation.shellQuote(consoleUserName())) \(name)" : name
+        return try Elevation.runAsRoot("/usr/bin/killall \(target)")
+    }
+
+    // MARK: Login items — removal via System Events
+
+    /// Delete an "Open at Login" entry (same op as "-" in Settings).
+    /// The entries themselves are BTM `app` records with an enabled
+    /// disposition — only removal needs the System Events bridge.
+    static func seRemoveLoginItem(name: String) throws -> String {
+        let script = "tell application \"System Events\" to delete login item \"\(name.replacingOccurrences(of: "\"", with: "\\\""))\""
+        return runAsConsoleUser("/usr/bin/osascript", ["-e", script])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: Notifications — usernoted group-container prefs
+
+    /// The authoritative per-app notification settings plist (com.apple.ncprefs
+    /// successor) — inside the console user's usernoted group container.
+    static var ncPrefsPath: String {
+        consoleHome() + "/Library/Group Containers/group.com.apple.usernoted/Library/Preferences/group.com.apple.usernoted.plist"
+    }
+
+    static func notificationApps() throws -> [NotificationApp] {
+        guard let root = NSDictionary(contentsOfFile: ncPrefsPath) as? [String: Any],
+              let apps = root["apps"] as? [[String: Any]] else {
+            throw NSError(domain: "OtherStore", code: 8,
+                          userInfo: [NSLocalizedDescriptionKey: "cannot read \(ncPrefsPath)"])
+        }
+        return apps.compactMap { a in
+            guard let bid = a["bundle-id"] as? String else { return nil }
+            return NotificationApp(
+                bundleID: bid,
+                path: a["path"] as? String,
+                flags: (a["flags"] as? NSNumber)?.uint64Value ?? 0,
+                auth: (a["auth"] as? NSNumber)?.intValue ?? 0)
+        }.sorted { $0.bundleID < $1.bundleID }
+    }
+
+    /// Mutate the apps array, write back preserving the console user's
+    /// ownership, then restart usernoted + cfprefsd so they re-read.
+    private static func ncWrite(_ mutate: (inout [[String: Any]]) -> Void) throws {
+        guard let root = NSMutableDictionary(contentsOfFile: ncPrefsPath),
+              var apps = root["apps"] as? [[String: Any]] else {
+            throw NSError(domain: "OtherStore", code: 9,
+                          userInfo: [NSLocalizedDescriptionKey: "cannot read \(ncPrefsPath)"])
+        }
+        mutate(&apps)
+        root["apps"] = apps
+        guard root.write(toFile: ncPrefsPath, atomically: true) else {
+            throw NSError(domain: "OtherStore", code: 10,
+                          userInfo: [NSLocalizedDescriptionKey: "failed writing \(ncPrefsPath)"])
+        }
+        // The file was (re)written by our process — restore the console
+        // user's ownership when running as root.
+        if geteuid() == 0 {
+            chown(ncPrefsPath, uid_t(consoleUID()), gid_t(bitPattern: -1))
+        }
+        // usernoted + cfprefsd cache the suite — restart them to re-read.
+        _ = try? Elevation.runAsRoot(
+            "/usr/bin/killall -u \(Elevation.shellQuote(consoleUserName())) usernoted cfprefsd")
+    }
+
+    /// Toggle the "allow notifications" bit (25) on one app's flags.
+    static func ncSet(bundleID: String, allow: Bool) throws -> String {
+        var found = false
+        try ncWrite { apps in
+            for i in apps.indices where apps[i]["bundle-id"] as? String == bundleID {
+                var flags = (apps[i]["flags"] as? NSNumber)?.uint64Value ?? 0
+                if allow { flags |= 1 << 25 } else { flags &= ~(1 << 25 as UInt64) }
+                apps[i]["flags"] = NSNumber(value: flags)
+                found = true
+            }
+        }
+        guard found else {
+            throw NSError(domain: "OtherStore", code: 11,
+                          userInfo: [NSLocalizedDescriptionKey: "no notification entry for \(bundleID)"])
+        }
+        return "\(bundleID): notifications \(allow ? "allowed" : "disabled") — verified by plist read-back"
+    }
+
+    /// Remove an app's entry entirely — it re-registers and re-prompts.
+    static func ncReset(bundleID: String) throws -> String {
+        var found = false
+        try ncWrite { apps in
+            let before = apps.count
+            apps.removeAll { $0["bundle-id"] as? String == bundleID }
+            found = apps.count != before
+        }
+        guard found else {
+            throw NSError(domain: "OtherStore", code: 11,
+                          userInfo: [NSLocalizedDescriptionKey: "no notification entry for \(bundleID)"])
+        }
+        return "\(bundleID): entry removed — will re-prompt on next launch"
     }
 
     // MARK: Gatekeeper — spctl (read unprivileged, writes via needt)

@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct TCCManagerApp: App {
     @StateObject private var model = TCCViewModel()
+    @StateObject private var stores = OtherStoresModel()
 
     init() {
         Self.relaunchAsRootIfNeeded()
@@ -32,6 +33,7 @@ struct TCCManagerApp: App {
         WindowGroup("TCC Manager") {
             ContentView()
                 .environmentObject(model)
+                .environmentObject(stores)
                 .frame(minWidth: 980, minHeight: 600)
         }
     }

@@ -3,9 +3,39 @@ import AppKit
 
 struct ContentView: View {
     @EnvironmentObject var model: TCCViewModel
-    @State private var showRestartConfirm = false
+    @EnvironmentObject var stores: OtherStoresModel
     @State private var showHelp = false
     @State private var sidebarSearch = ""
+    @State private var restartTarget: RestartableService?
+
+    /// A daemon that can be killed to drop its cached state.
+    struct RestartableService: Identifiable {
+        let label: String
+        let process: String
+        let perUser: Bool
+        let note: String
+        var id: String { label }
+        static let all: [RestartableService] = [
+            .init(label: "tccd (user)", process: "tccd", perUser: true,
+                  note: "Drops the per-user TCC identity cache; relaunches on demand."),
+            .init(label: "tccd (all)", process: "tccd", perUser: false,
+                  note: "Kills every tccd instance including the system one."),
+            .init(label: "usernoted", process: "usernoted", perUser: true,
+                  note: "Notification settings + delivered-notification caches."),
+            .init(label: "pkd", process: "pkd", perUser: true,
+                  note: "Plug-in/extension registry cache."),
+            .init(label: "cfprefsd", process: "cfprefsd", perUser: true,
+                  note: "Cached preferences — needed after direct plist edits."),
+            .init(label: "locationd", process: "locationd", perUser: false,
+                  note: "Location Services authorization cache."),
+            .init(label: "backgroundtaskmanagementd", process: "backgroundtaskmanagementd", perUser: false,
+                  note: "Login/background item registry cache."),
+            .init(label: "syspolicyd", process: "syspolicyd", perUser: false,
+                  note: "Gatekeeper assessment cache."),
+            .init(label: "nehelper", process: "nehelper", perUser: false,
+                  note: "Local Network decision cache."),
+        ]
+    }
 
     private var visibleRecords: [TCCRecord] {
         switch model.mode {
@@ -28,7 +58,7 @@ struct ContentView: View {
             if rec.indirectObject != "UNUSED" {
                 service += " → " + Resolver.identity(for: rec.indirectObject, clientType: 0).name
             }
-            return PermRow(
+            var row = PermRow(
                 id: rec.id,
                 icon: id.icon,
                 title: id.name,
@@ -39,22 +69,92 @@ struct ContentView: View {
                 info: rec.managed ? "Managed (MDM)" : rec.reasonName,
                 detail: "\(rec.db.kind.rawValue) DB · \(rec.lastModified.formatted(date: .abbreviated, time: .omitted))",
                 ops: rec.managed ? [] : [.allow, .deny, .reset],
-                payload: rec,
-                extraCopy: {
-                    guard let blob = rec.csreq, let text = Resolver.csreqText(blob)
-                    else { return nil }
-                    return ("Copy Code Requirement", text)
-                })
+                payload: rec)
+            row.appKey = rec.client
+            row.extraCopy = {
+                guard let blob = rec.csreq, let text = Resolver.csreqText(blob)
+                else { return nil }
+                return ("Copy Code Requirement", text)
+            }
+            return row
         }
     }
 
+    /// Rows for the detail pane — by-service/by-app TCC records, plus every
+    /// Other-store row attributable to the selected app in By App mode.
+    private var detailRows: [PermRow] {
+        guard case .client = model.selection else { return tccRows }
+        let parts = model.selectedClient?.split(separator: "|", maxSplits: 1)
+        let client = parts?.last.map(String.init) ?? ""
+        return tccRows + stores.rows.values.flatMap { $0 }.filter { $0.appKey == client }
+    }
+
+    /// One op dispatcher for the detail list — TCC payloads go through the
+    /// TCC confirmation sheet, everything else through the store handlers.
+    private func dispatchOp(_ op: RowOp, _ sel: [PermRow]) {
+        let tcc = sel.compactMap { $0.payload as? TCCRecord }
+        if !tcc.isEmpty {
+            switch op {
+            case .allow: model.request(.grant, for: tcc)
+            case .deny:  model.request(.revoke, for: tcc)
+            case .reset: model.request(.reset, for: tcc)
+            default: break
+            }
+        }
+        stores.ask(op, sel.filter { !($0.payload is TCCRecord) })
+    }
+
+    /// Shared supported-op set for the mixed By App list.
+    private static let allOps: Set<RowOp> = Set(RowOp.allCases)
+
     var body: some View {
+        Group {
+            if model.didInitialLoad && stores.booted {
+                mainView
+            } else {
+                loadingView
+            }
+        }
+        .task {
+            model.refresh()
+            stores.loadAll()
+        }
+    }
+
+    /// Startup gate — everything loads once up front so no pane shows a
+    /// loading screen afterwards.
+    private var loadingView: some View {
+        VStack(spacing: 14) {
+            Text("TCC Manager").font(.title.bold())
+            ProgressView()
+            VStack(alignment: .leading, spacing: 4) {
+                loadRow("TCC databases", done: model.didInitialLoad)
+                ForEach(OtherPane.allCases) { pane in
+                    loadRow(pane.rawValue, done: stores.state[pane] != nil
+                            && stores.state[pane] != .loading)
+                }
+            }
+            .font(.callout).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func loadRow(_ label: String, done: Bool) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: done ? "checkmark.circle.fill" : "circle.dotted")
+                .foregroundStyle(done ? .green : .secondary)
+            Text(label)
+        }
+    }
+
+    private var mainView: some View {
         NavigationSplitView {
             VStack(spacing: 0) {
                 Picker("Mode", selection: $model.mode) {
                     ForEach(ViewMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
                 .padding(8)
 
                 HStack(spacing: 5) {
@@ -90,17 +190,10 @@ struct ContentView: View {
             } else {
             VStack(spacing: 0) {
                 UnifiedListView(
-                    rows: tccRows,
-                    supportedOps: [.allow, .deny, .reset],
-                    onOp: { op, sel in
-                        let recs = sel.compactMap { $0.payload as? TCCRecord }
-                        switch op {
-                        case .allow: model.request(.grant, for: recs)
-                        case .deny:  model.request(.revoke, for: recs)
-                        case .reset: model.request(.reset, for: recs)
-                        default: break
-                        }
-                    })
+                    rows: detailRows,
+                    supportedOps: model.selectedClient != nil
+                        ? Self.allOps : [.allow, .deny, .reset],
+                    onOp: dispatchOp)
                 if !model.status.isEmpty {
                     Divider()
                     ScrollView {
@@ -114,6 +207,7 @@ struct ContentView: View {
                     .background(Color(nsColor: .textBackgroundColor))
                 }
             }
+            .otherOpAlert($stores.op, perform: stores.perform)
             }
         }
         .toolbar {
@@ -135,9 +229,10 @@ struct ContentView: View {
                 Button { model.refreshAll() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
             }
             ToolbarItemGroup(placement: .primaryAction) {
-                Menu("Daemon") {
-                    Button("Restart user tccd") { showRestartConfirm = true }
-                    Button("Restart system tccd (admin)…") { model.restartSystemTCCD() }
+                Menu("Restart") {
+                    ForEach(RestartableService.all) { s in
+                        Button("\(s.label)…") { restartTarget = s }
+                    }
                 }
                 Menu {
                     if case .service(let svc) = model.selection,
@@ -183,13 +278,25 @@ struct ContentView: View {
             ConfirmSheet()
         }
         .sheet(isPresented: $model.showGrantSheet) { GrantSheet() }
-        .alert("Restart user tccd?", isPresented: $showRestartConfirm) {
-            Button("Restart") { model.restartUserTCCD() }
+        .alert(restartTarget.map { "Restart \($0.label)?" } ?? "", isPresented: Binding(
+            get: { restartTarget != nil }, set: { if !$0 { restartTarget = nil } })) {
+            Button("Restart", role: .destructive) {
+                if let s = restartTarget {
+                    Task.detached {
+                        do {
+                            _ = try OtherStore.restartDaemon(s.process, perUser: s.perUser)
+                            await MainActor.run { model.status = "\(s.label) restarted — it relaunches on demand." }
+                        } catch {
+                            await MainActor.run { model.status = "✗ \(s.label): \(error.localizedDescription)" }
+                        }
+                    }
+                }
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The per-user tccd will be killed and relaunched on demand. This drops its identity cache. Running apps keep any kernel-cached verdicts.")
+            Text(restartTarget?.note ?? "")
         }
-        .onAppear { model.refresh() }
+        .onChange(of: model.otherReload) { _, _ in stores.loadAll() }
     }
 
     // MARK: Sidebars
@@ -232,22 +339,47 @@ struct ContentView: View {
         }
     }
 
+    /// By App sidebar — TCC clients merged with every Other-store row's
+    /// appKey, keyed "<type>|<client>" like TCC clients (type 1 = path).
+    private var allAppKeys: [String] {
+        var keys = Set(model.clientsPresent)
+        for row in stores.rows.values.flatMap({ $0 }) where !row.appKey.isEmpty {
+            keys.insert("\(row.appKey.hasPrefix("/") ? 1 : 0)|\(row.appKey)")
+        }
+        return keys.sorted {
+            Self.keyName($0).lowercased() < Self.keyName($1).lowercased()
+        }
+    }
+
+    private static func keyParts(_ key: String) -> (client: String, type: Int) {
+        let parts = key.split(separator: "|", maxSplits: 1)
+        return (String(parts.last ?? ""), Int(parts.first ?? "0") ?? 0)
+    }
+
+    private static func keyName(_ key: String) -> String {
+        let p = keyParts(key)
+        return Resolver.identity(for: p.client, clientType: p.type).name
+    }
+
+    /// Per-app Other-store row counts — one pass over all store rows.
+    private var otherCountByKey: [String: Int] {
+        Dictionary(grouping: stores.rows.values.flatMap { $0 }.filter { !$0.appKey.isEmpty },
+                   by: \.appKey).mapValues(\.count)
+    }
+
     @ViewBuilder
     private var appRows: some View {
         let q = sidebarSearch.trimmingCharacters(in: .whitespaces).lowercased()
-        ForEach(model.clientsPresent.filter { key in
+        let counts = otherCountByKey
+        ForEach(allAppKeys.filter { key in
             guard !q.isEmpty else { return true }
-            let parts = key.split(separator: "|", maxSplits: 1)
-            let client = String(parts.last ?? "")
-            let type = Int(parts.first ?? "0") ?? 0
-            return client.lowercased().contains(q)
-                || Resolver.identity(for: client, clientType: type).name.lowercased().contains(q)
+            return Self.keyParts(key).client.lowercased().contains(q)
+                || Self.keyName(key).lowercased().contains(q)
         }, id: \.self) { key in
-            let parts = key.split(separator: "|", maxSplits: 1)
-            let client = String(parts.last ?? "")
-            let type = Int(parts.first ?? "0") ?? 0
-            let id = Resolver.identity(for: client, clientType: type)
-            let count = model.recordsForClient(client, clientType: type).count
+            let p = Self.keyParts(key)
+            let id = Resolver.identity(for: p.client, clientType: p.type)
+            let count = model.recordsForClient(p.client, clientType: p.type).count
+                + (counts[p.client] ?? 0)
             Label {
                 HStack {
                     Text(id.name).lineLimit(1)

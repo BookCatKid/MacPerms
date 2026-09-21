@@ -15,6 +15,10 @@ struct PermRow: Identifiable {
     let detail: String         // path / db+date / requirement / executable
     let ops: Set<RowOp>        // actions valid for THIS row (empty = read-only)
     let payload: Any           // underlying record for op handlers
+    /// Normalized application identity (bundle id or path) — used to merge
+    /// every store's rows into the By App view. Empty = not attributable
+    /// to a single app (e.g. Gatekeeper rules) → excluded from By App.
+    var appKey: String = ""
     /// Optional extra context-menu copy action, evaluated lazily on click.
     var extraCopy: (() -> (label: String, text: String)?)? = nil
 }

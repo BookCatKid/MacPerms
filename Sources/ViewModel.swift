@@ -24,6 +24,8 @@ final class TCCViewModel: ObservableObject {
     @Published var showGrantSheet = false
     /// Bumped by the toolbar Refresh button — Other panes reload on change.
     @Published var otherReload = UUID()
+    /// True once the first TCC refresh completed (loading-screen gate).
+    @Published var didInitialLoad = false
 
     /// TCC accessors — kept so all existing call sites are unchanged.
     var selectedService: String? {
@@ -66,6 +68,7 @@ final class TCCViewModel: ObservableObject {
                 // Only auto-pick a service when nothing is selected — otherwise
                 // refresh would yank the user off an Other-Stores pane.
                 if self.selection == nil { self.selection = records.first.map { .service($0.service) } }
+                self.didInitialLoad = true
             }
         }
     }

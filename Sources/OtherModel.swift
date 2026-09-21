@@ -25,7 +25,7 @@ enum OtherPane: String, CaseIterable, Identifiable, Hashable {
         case .localNetwork:
             return "Local Network decisions are enforced by nehelper (com.apple.network.localnetworkdecision) and stored per-user inside the NetworkExtension keyed archive /Library/Preferences/com.apple.networkextension.plist.\n\nDenyMulticast is the allow/deny flag; MulticastPreferenceSet marks an explicit user choice. Apps need NSLocalNetworkUsageDescription to be prompted.\n\nWrites go through SCPreferences as root — the archive round-trip is verified, but whether nehelper honors a write without restart is unverified; relaunch the app to test."
         case .loginItems:
-            return "Open-at-login items registered through SMAppService / SMLoginItem — System Settings → General → Login Items & Extensions → Open at Login.\n\nEach item is a launchd service in the gui domain, so Enable/Disable maps to `launchctl enable|disable gui/<uid>/<label>` — the same state Settings toggles (print-disabled state mirrors the BTM disposition)."
+            return "The 'Open at Login' list — System Settings → General → Login Items & Extensions → Open at Login.\n\nTwo kinds of entries appear here: SMAppService login items (launchd services — Enable/Disable maps to `launchctl enable|disable gui/<uid>/<label>`) and app records whose BTM disposition is enabled (the classic open-at-login entries — Remove deletes the entry via System Events)."
         case .backgroundItems:
             return "Launch agents/daemons and app background activity — managed by backgroundtaskmanagementd via binary .btm files. This is System Settings → General → Login Items & Extensions → Allow in the Background.\n\nsfltool exposes no per-item toggle, but every launchd-backed item's enabled state lives in `launchctl print-disabled` — Enable/Disable writes that registry directly (state shown per row; launchd value wins when present). Grouping records (developer/app/dock tile) are not services and stay read-only.\n\n'Reset ALL' runs sfltool resetbtm — the nuclear option: every item re-registers on next launch."
         case .appExtensions:
@@ -35,7 +35,7 @@ enum OtherPane: String, CaseIterable, Identifiable, Hashable {
         case .location:
             return "Per-app Location Services authorization is locationd's own store (clients plists under /var/db/locationd), not TCC — reading it requires root.\n\nClient keys are composite (<userUUID>:<bundleID>: or <userUUID>:e<path>:); the real identity comes from each entry's BundleId/BundlePath/Executable.\n\nToggling writes the `Authorized` flag directly — an UNVERIFIED write path on macOS 27: locationd may ignore it until restarted. Relaunch the app to test."
         case .notifications:
-            return "Per-app notification authorization is managed by usernoted/Notification Center — but the authoritative store has not been located on macOS 27 yet.\n\nChecked: com.apple.ncprefs (prefs only), the db2 sqlite under com.apple.notificationcenter containers (absent on 27), Biome notification streams (event history, not authorization).\n\nNo mutation is offered until the store is mapped and a safe write path is verified."
+            return "Per-app notification authorization, managed by usernoted and stored in the usernoted group-container preferences plist.\n\nThe 'allow notifications' switch is bit 25 of each app's flags value; style (banners/alerts), badges, sounds and lock-screen display live in other bits. Reset removes the app's entry entirely — it re-registers and re-prompts on next launch.\n\nWrites edit the plist directly and restart usernoted so it re-reads."
         }
     }
 }
@@ -105,4 +105,41 @@ struct AppExtension: Identifiable, Hashable {
     let path: String
     let enabled: Bool          // pluginkit '-' marker means ignored
     var id: String { extID }
+    /// The .app bundle hosting this extension, for by-app grouping.
+    var hostAppPath: String? {
+        var p = path as NSString
+        while p.length > 1 {
+            if p.hasSuffix(".app") { return p as String }
+            p = p.deletingLastPathComponent as NSString
+        }
+        return nil
+    }
+}
+
+/// A usernoted per-app notification settings entry.
+/// `flags` bit layout (com.apple.ncprefs → group.com.apple.usernoted):
+///   bit 1 badge · bit 2 sound · bit 3 banners · bit 4 alerts
+///   bit 12 show-on-lockscreen (inverted) · bit 25 allow · bit 26 critical
+struct NotificationApp: Identifiable, Hashable {
+    let bundleID: String
+    let path: String?
+    let flags: UInt64
+    let auth: Int
+    var id: String { bundleID }
+    var allowed: Bool   { flags & (1 << 25) != 0 }
+    var badge: Bool     { flags & (1 << 1) != 0 }
+    var sound: Bool     { flags & (1 << 2) != 0 }
+    var lockscreen: Bool { flags & (1 << 12) == 0 }
+    var critical: Bool  { flags & (1 << 26) != 0 }
+    var style: String {
+        flags & (1 << 4) != 0 ? "Alerts" : flags & (1 << 3) != 0 ? "Banners" : "None"
+    }
+    var summary: String {
+        var parts = [style]
+        if badge { parts.append("badge") }
+        if sound { parts.append("sound") }
+        if lockscreen { parts.append("lock screen") }
+        if critical { parts.append("critical") }
+        return parts.joined(separator: " · ")
+    }
 }
