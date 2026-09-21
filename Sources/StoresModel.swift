@@ -125,8 +125,11 @@ final class OtherStoresModel: ObservableObject, @unchecked Sendable {
         // from the .btm archive (enabled `app` records also lose their
         // System Events 'Open at Login' entry).
         let ops: Set<RowOp> = [.remove, .enable, .disable]
+        // Unsigned/developer records can have a literal "(null)" name —
+        // fall back to the identifier ("Unknown Developer", bundle id, …).
+        let title = (i.name.isEmpty || i.name == "(null)") ? i.identifier : i.name
         var row = PermRow(
-            id: i.id, icon: id.icon, title: i.name, subtitle: i.identifier,
+            id: i.id, icon: id.icon, title: title, subtitle: i.identifier,
             service: type,
             status: i.allowed ? "Enabled" : "Disabled",
             statusColor: i.allowed ? .green : .secondary,
