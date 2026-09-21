@@ -59,8 +59,9 @@ enum Resolver {
     /// up-to-1024px representations whose compositing cost shows up as scroll
     /// lag when every visible table row draws one. SF-symbol fallback icons
     /// are left alone (cheap vectors + they need template rendering).
+    /// 96px covers 40pt display on retina (2×) with headroom.
     static func smallIcon(_ img: NSImage) -> NSImage {
-        let s: CGFloat = 48
+        let s: CGFloat = 96
         let out = NSImage(size: NSSize(width: s, height: s))
         out.lockFocus()
         NSGraphicsContext.current?.imageInterpolation = .high

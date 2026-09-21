@@ -90,7 +90,7 @@ struct UnifiedListView: View {
                         Image(nsImage: r.icon)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
-                            .frame(width: 20, height: 20)
+                            .frame(width: 40, height: 40)
                         VStack(alignment: .leading) {
                             Text(r.title).lineLimit(1)
                             Text(r.subtitle).font(.caption)

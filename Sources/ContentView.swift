@@ -392,7 +392,7 @@ struct ContentView: View {
                 Image(nsImage: id.icon)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .frame(width: 18, height: 18)
+                    .frame(width: 36, height: 36)
             }
             .tag(NavItem.client(key))
         }
